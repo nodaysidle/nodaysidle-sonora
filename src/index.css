@@ -1,0 +1,145 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --accent: #c8ff00;
+    --background: rgba(10, 10, 15, 0.85);
+    --surface: rgba(22, 22, 34, 0.7);
+    --surface-hover: rgba(35, 35, 52, 0.8);
+    --border: rgba(255, 255, 255, 0.08);
+  }
+
+  body {
+    margin: 0;
+    padding: 0;
+    background-color: transparent;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: #f3f4f6;
+    overflow: hidden;
+  }
+}
+
+/* Glassmorphism helpers */
+/* Ambient accent wash behind the workspace. Without it the large empty regions read as flat black;
+   the wash gives the accent somewhere to live and adds depth behind the translucent panels.
+   `isolation` makes the container its own stacking context so the -1 pseudo-element sits behind the
+   panes but in front of the window's own background. */
+.ambient-wash {
+  isolation: isolate;
+}
+
+.ambient-wash::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(58rem 30rem at 14% -14%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 68%),
+    radial-gradient(46rem 26rem at 92% 2%, rgba(110, 132, 255, 0.07), transparent 70%);
+}
+
+.glass-panel {
+  background: var(--surface);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--border);
+}
+
+.glass-nav {
+  background: var(--background);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-right: 1px solid var(--border);
+}
+
+.glass-player {
+  background: var(--background);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border-top: 1px solid var(--border);
+}
+
+/* Accent helpers — themes rewrite --accent, so components never hard-code the lime. */
+.accent-bg {
+  background-color: var(--accent);
+}
+
+.accent-text {
+  color: var(--accent);
+}
+
+.accent-border {
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.accent-soft {
+  background-color: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.accent-soft-hover:hover {
+  background-color: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.accent-shadow {
+  box-shadow: 0 0 16px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+/* Range inputs need their track and thumb drawn explicitly: WKWebView's default slider ignores
+   `accent-color` on the track and renders a pill that fights the glass surface. */
+.accent-range {
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+}
+
+.accent-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.accent-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  border-radius: 9999px;
+  background: var(--accent);
+  border: none;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+  transition: transform 120ms ease;
+}
+
+.accent-range:hover::-webkit-slider-thumb {
+  transform: scale(1.15);
+}
+
+.accent-range:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: 4px;
+  border-radius: 9999px;
+}
+
+.accent-focus:focus {
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+}
+
+/* Custom sleek scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+}

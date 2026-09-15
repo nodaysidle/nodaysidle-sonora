@@ -1,0 +1,51 @@
+[package]
+name = "sonora"
+version = "0.1.0"
+description = "Universal Native Desktop Music Player"
+authors = ["NODAYSIDLE"]
+edition = "2021"
+
+[lib]
+name = "sonora_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = ["codegen"] }
+
+[dependencies]
+tauri = { version = "2", features = ["macos-private-api", "protocol-asset"] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.38", features = ["full"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+window-vibrancy = "0.6"
+lofty = "0.21"
+lindera = { version = "6", default-features = false, features = ["embed-ipadic"] }
+symphonia = { version = "0.5", features = ["all"] }
+cpal = "0.15"
+crossbeam-queue = "0.3"
+reqwest = { version = "0.12", features = ["json", "blocking", "stream"] }
+notify = "6.1"
+tauri-plugin-global-shortcut = "2.3.2"
+walkdir = "2.5"
+chrono = "0.4"
+async-trait = "0.1"
+base64 = "0.22"
+sha2 = "0.10"
+rand = "0.8"
+urlencoding = "2"
+pinyin = "0.11"
+keyring = { version = "3", features = ["apple-native"] }
+librespot = { version = "0.8", default-features = false, features = ["native-tls", "rodio-backend", "with-libmdns"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+strip = true
+panic = "abort"
+
+[dev-dependencies]
+tempfile = "3"
