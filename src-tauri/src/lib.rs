@@ -410,8 +410,14 @@ async fn spotify_authenticate(app: AppHandle) -> Result<bool, String> {
         .ok_or_else(|| "Add your Spotify app's Client ID in Settings first.".to_string())?;
     drop(state);
 
+    let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        providers::spotify::authenticate(&client_id).map(|_| true)
+        providers::spotify::authenticate_with_emitter(&client_id, move |url| {
+            let _ = app_handle.emit("spotify://auth-url", url);
+            use tauri_plugin_opener::OpenerExt;
+            let _ = app_handle.opener().open_url(url, None::<&str>);
+        })
+        .map(|_| true)
     })
     .await
     .map_err(|e| e.to_string())?

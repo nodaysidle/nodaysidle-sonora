@@ -15,7 +15,7 @@ jobs:
       matrix:
         include:
           - platform: 'macos-latest' # Apple Silicon runner
-            args: '--target aarch64-apple-darwin'
+            args: ''
           - platform: 'ubuntu-22.04' # Linux runner
             args: ''
 

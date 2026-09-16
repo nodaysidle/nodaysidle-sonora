@@ -1,6 +1,6 @@
 [package]
 name = "sonora"
-version = "0.1.0"
+version = "0.1.1"
 description = "Universal Native Desktop Music Player"
 authors = ["NODAYSIDLE"]
 edition = "2021"

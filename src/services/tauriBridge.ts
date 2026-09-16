@@ -324,4 +324,17 @@ export const tauriBridge = {
   onMediaKey(handler: (payload: { action: MediaKeyAction }) => void): Promise<UnlistenFn> {
     return subscribe(EVENTS.mediaKey, handler);
   },
+
+  onSpotifyAuthUrl(handler: (url: string) => void): Promise<UnlistenFn> {
+    return subscribe('spotify://auth-url', handler);
+  },
+
+  async openUrl(url: string): Promise<void> {
+    try {
+      const { openUrl } = await import('@tauri-apps/plugin-opener');
+      await openUrl(url);
+    } catch {
+      window.open(url, '_blank');
+    }
+  },
 };

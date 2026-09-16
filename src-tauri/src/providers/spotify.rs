@@ -69,6 +69,46 @@ fn now_seconds() -> u64 {
         .unwrap_or(0)
 }
 
+fn fallback_tokens_path() -> std::path::PathBuf {
+    if let Ok(config_home) = std::env::var("XDG_CONFIG_HOME") {
+        std::path::PathBuf::from(config_home).join("sonora").join("spotify_tokens.json")
+    } else if let Ok(home) = std::env::var("HOME") {
+        std::path::PathBuf::from(home).join(".config").join("sonora").join("spotify_tokens.json")
+    } else {
+        std::path::PathBuf::from("spotify_tokens.json")
+    }
+}
+
+fn store_tokens_fallback(tokens: &SpotifyTokens) -> Result<(), String> {
+    let path = fallback_tokens_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let json = serde_json::to_string(tokens).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json)
+        .map_err(|e| format!("failed to write fallback Spotify tokens: {e}"))
+}
+
+fn load_tokens_fallback() -> Result<Option<SpotifyTokens>, String> {
+    let path = fallback_tokens_path();
+    if !path.exists() {
+        return Ok(None);
+    }
+    let data = std::fs::read_to_string(&path)
+        .map_err(|e| format!("failed to read fallback Spotify tokens: {e}"))?;
+    serde_json::from_str(&data)
+        .map(Some)
+        .map_err(|e| format!("unreadable fallback Spotify tokens: {e}"))
+}
+
+fn clear_tokens_fallback() -> Result<(), String> {
+    let path = fallback_tokens_path();
+    if path.exists() {
+        let _ = std::fs::remove_file(&path);
+    }
+    Ok(())
+}
+
 fn keyring_entry() -> Result<keyring::Entry, String> {
     keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
         .map_err(|e| format!("OS keyring unavailable, cannot store Spotify credentials: {e}"))
@@ -76,28 +116,41 @@ fn keyring_entry() -> Result<keyring::Entry, String> {
 
 fn store_tokens(tokens: &SpotifyTokens) -> Result<(), String> {
     let json = serde_json::to_string(tokens).map_err(|e| e.to_string())?;
-    keyring_entry()?
-        .set_password(&json)
-        .map_err(|e| format!("failed to write Spotify credentials to the keyring: {e}"))
+    match keyring_entry() {
+        Ok(entry) => {
+            if let Err(e) = entry.set_password(&json) {
+                eprintln!("Keyring write failed ({e}), using file fallback");
+                store_tokens_fallback(tokens)?;
+            } else {
+                let _ = store_tokens_fallback(tokens);
+            }
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("Keyring unavailable ({e}), using file fallback");
+            store_tokens_fallback(tokens)
+        }
+    }
 }
 
 pub fn load_tokens() -> Result<Option<SpotifyTokens>, String> {
-    match keyring_entry()?.get_password() {
-        Ok(json) => serde_json::from_str(&json)
-            .map(Some)
-            .map_err(|e| format!("stored Spotify credentials are unreadable: {e}")),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(e) => Err(format!(
-            "failed to read Spotify credentials from the keyring: {e}"
-        )),
+    match keyring_entry() {
+        Ok(entry) => match entry.get_password() {
+            Ok(json) => match serde_json::from_str::<SpotifyTokens>(&json) {
+                Ok(tokens) => Ok(Some(tokens)),
+                Err(_) => load_tokens_fallback(),
+            },
+            Err(_) => load_tokens_fallback(),
+        },
+        Err(_) => load_tokens_fallback(),
     }
 }
 
 pub fn clear_tokens() -> Result<(), String> {
-    match keyring_entry()?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(e) => Err(e.to_string()),
+    if let Ok(entry) = keyring_entry() {
+        let _ = entry.delete_credential();
     }
+    clear_tokens_fallback()
 }
 
 pub fn has_credentials() -> bool {
@@ -149,9 +202,16 @@ fn exchange_token(form: &[(&str, String)]) -> Result<TokenResponse, String> {
         .map_err(|e| format!("unreadable token response: {e}"))
 }
 
-/// Runs the full PKCE authorization-code flow: opens the system browser, waits for the loopback
-/// callback, then exchanges the code for tokens and stores them in the keyring.
 pub fn authenticate(client_id_raw: &str) -> Result<SpotifyTokens, String> {
+    authenticate_with_emitter(client_id_raw, |_| {})
+}
+
+/// Runs the full PKCE authorization-code flow: opens the system browser, waits for the loopback
+/// callback, then exchanges the code for tokens and stores them in the keyring or file fallback.
+pub fn authenticate_with_emitter<F: Fn(&str) + Send + Sync + 'static>(
+    client_id_raw: &str,
+    on_url: F,
+) -> Result<SpotifyTokens, String> {
     let client_id = client_id_raw.trim();
     if client_id.is_empty() {
         return Err("Add your Spotify app's Client ID in Settings first, then connect.".to_string());
@@ -174,7 +234,8 @@ pub fn authenticate(client_id_raw: &str) -> Result<SpotifyTokens, String> {
         urlencode(SCOPES),
     );
 
-    open_in_browser(&authorize_url)?;
+    on_url(&authorize_url);
+    let _ = open_in_browser(&authorize_url);
 
     // Bounded wait: a user who abandons the browser tab should not leave this thread parked on
     // accept() forever.
@@ -269,9 +330,35 @@ fn open_in_browser(url: &str) -> Result<(), String> {
     let command = "open";
     #[cfg(target_os = "windows")]
     let command = "explorer";
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let command = "xdg-open";
 
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        // Inside AppImage, LD_LIBRARY_PATH causes host binaries (xdg-open, gio, browsers)
+        // to fail due to conflicting bundled libraries. Strip AppImage environment variables.
+        let spawn_clean = |bin: &str, args: &[&str]| -> bool {
+            let mut cmd = std::process::Command::new(bin);
+            cmd.env_remove("LD_LIBRARY_PATH");
+            cmd.env_remove("LD_PRELOAD");
+            cmd.env_remove("PYTHONPATH");
+            cmd.args(args);
+            cmd.spawn().is_ok()
+        };
+
+        if spawn_clean("xdg-open", &[url]) {
+            return Ok(());
+        }
+        if spawn_clean("gio", &["open", url]) {
+            return Ok(());
+        }
+        for b in &["firefox", "google-chrome-stable", "google-chrome", "chromium", "brave", "zen-browser"] {
+            if spawn_clean(b, &[url]) {
+                return Ok(());
+            }
+        }
+        return Err("could not open the browser automatically".to_string());
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     std::process::Command::new(command)
         .arg(url)
         .spawn()

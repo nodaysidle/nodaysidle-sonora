@@ -57,11 +57,25 @@ export const SettingsView: React.FC = () => {
   const [clientIdDraft, setClientIdDraft] = useState('');
   const [clientIdSaved, setClientIdSaved] = useState(false);
   const [redirectCopied, setRedirectCopied] = useState(false);
+  const [authUrl, setAuthUrl] = useState<string | null>(null);
+  const [copiedAuth, setCopiedAuth] = useState(false);
 
   // Mirrors whatever the backend currently holds, including a value edited outside the app.
   useEffect(() => {
     setClientIdDraft(config.spotifyClientId ?? '');
   }, [config.spotifyClientId]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void tauriBridge.onSpotifyAuthUrl((url) => {
+      setAuthUrl(url);
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
 
   useEffect(() => {
     void loadConfig();
@@ -72,6 +86,16 @@ export const SettingsView: React.FC = () => {
       .catch(() => setTrackCount(0));
     void tauriBridge.settingsFilePath().then(setSettingsPath);
   }, [loadConfig, refreshSpotifyStatus]);
+
+  const handleConnect = async () => {
+    setAuthUrl(null);
+    if (clientIdDraft.trim() && clientIdDraft.trim() !== (config.spotifyClientId ?? '')) {
+      await saveSpotifyClientId(clientIdDraft.trim());
+      setClientIdSaved(true);
+      setTimeout(() => setClientIdSaved(false), 2500);
+    }
+    await connectSpotify();
+  };
 
   return (
     <div className="flex-1 overflow-y-auto bg-zinc-950/40">
@@ -105,7 +129,7 @@ export const SettingsView: React.FC = () => {
             </div>
             <div className="flex items-center space-x-2">
               <button
-                onClick={() => void connectSpotify()}
+                onClick={() => void handleConnect()}
                 disabled={isSpotifyConnecting}
                 className="inline-flex items-center space-x-2 px-3 py-1.5 rounded-lg text-[11px] font-semibold accent-bg text-black hover:scale-105 transition-transform disabled:opacity-50 disabled:hover:scale-100"
               >
@@ -123,6 +147,38 @@ export const SettingsView: React.FC = () => {
               )}
             </div>
           </div>
+
+          {authUrl && isSpotifyConnecting && (
+            <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/25 space-y-2">
+              <div className="flex items-center justify-between text-xs text-emerald-300 font-medium">
+                <span>Spotify Authorization Request</span>
+                <span className="text-[10px] text-emerald-400/80 font-mono">Port 8899</span>
+              </div>
+              <p className="text-[11px] text-zinc-300">
+                If your browser didn't open automatically, click below to authorize in Spotify:
+              </p>
+              <div className="flex items-center space-x-2">
+                <button
+                  type="button"
+                  onClick={() => void tauriBridge.openUrl(authUrl)}
+                  className="px-3 py-1.5 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-black font-semibold text-[11px] transition-colors"
+                >
+                  Open in Browser
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(authUrl);
+                    setCopiedAuth(true);
+                    setTimeout(() => setCopiedAuth(false), 2000);
+                  }}
+                  className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-zinc-200 text-[11px] transition-colors"
+                >
+                  {copiedAuth ? 'Copied Link!' : 'Copy Link'}
+                </button>
+              </div>
+            </div>
+          )}
 
           <div className="space-y-1.5">
             <label
