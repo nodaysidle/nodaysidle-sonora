@@ -21,9 +21,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/nodaysidle/nodaysidle-sonora/releases/download/v0.1.0/Sonora_0.1.0_aarch64.dmg"><strong>Download macOS DMG (v0.1.0)</strong></a>
+  <a href="https://github.com/nodaysidle/nodaysidle-sonora/releases/download/v0.1.1/Sonora_0.1.1_aarch64.dmg"><strong>Download macOS DMG (v0.1.1)</strong></a>
   ·
-  <a href="https://github.com/nodaysidle/nodaysidle-sonora/releases/download/v0.1.0/Sonora_0.1.0_amd64.AppImage"><strong>Download Linux AppImage (v0.1.0)</strong></a>
+  <a href="https://github.com/nodaysidle/nodaysidle-sonora/releases/download/v0.1.1/Sonora_0.1.1_amd64.AppImage"><strong>Download Linux AppImage (v0.1.1)</strong></a>
   ·
   <a href="https://github.com/nodaysidle/nodaysidle-sonora/releases">All Releases</a>
 </p>
