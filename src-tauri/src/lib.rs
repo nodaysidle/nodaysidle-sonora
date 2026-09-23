@@ -11,7 +11,7 @@ use db::{AlbumRecord, ArtistRecord, DbState, TrackRecord};
 use library::scanner::{embedded_lyrics, scan_directory, ScanSummary};
 use lyrics::ParsedLyrics;
 use notify::{EventKind, RecursiveMode, Watcher};
-use providers::spotify::{NativeSpotifyPlayer, SpotifyPlaybackState, SpotifyProvider};
+use providers::spotify::{SpotifyConnectPlayer, SpotifyPlaybackState, SpotifyProvider};
 use providers::ytmusic::YouTubeMusicProvider;
 use providers::{MusicProvider, ProviderPlaylist, ProviderTrack, SearchResults};
 use std::path::{Path, PathBuf};
@@ -30,7 +30,7 @@ pub struct AppState {
     pub audio_engine: Arc<AudioEngine>,
     pub db: Arc<DbState>,
     pub data_dir: PathBuf,
-    pub spotify_player: Arc<NativeSpotifyPlayer>,
+    pub spotify_player: Arc<SpotifyConnectPlayer>,
     library_watchers: Mutex<Vec<notify::RecommendedWatcher>>,
     scan_lock: Arc<Mutex<()>>,
     auto_scan_pending: Arc<std::sync::atomic::AtomicBool>,
@@ -399,7 +399,9 @@ fn spotify_provider(state: &AppState) -> Result<SpotifyProvider, String> {
         .config()
         .spotify_client_id
         .filter(|id| !id.trim().is_empty())
-        .ok_or_else(|| "Add your Spotify app's Client ID in Settings first, then connect.".to_string())?;
+        .ok_or_else(|| {
+            "Add your Spotify app's Client ID in Settings first, then connect.".to_string()
+        })?;
     Ok(SpotifyProvider::new(client_id))
 }
 
@@ -635,7 +637,6 @@ async fn spotify_resolve_stream(
     .map_err(|e| e.to_string())?
 }
 
-
 // -------------------------------------------------------------------------------------------
 // Setup
 // -------------------------------------------------------------------------------------------
@@ -703,8 +704,7 @@ pub fn run() {
             audio_engine.attach_app(handle.clone());
 
             let client_id = AppConfig::load(&data_dir).spotify_client_id;
-            let spotify_cache = data_dir.join("spotify_cache");
-            let spotify_player = Arc::new(NativeSpotifyPlayer::new(Some(spotify_cache), client_id));
+            let spotify_player = Arc::new(SpotifyConnectPlayer::new(client_id));
             spotify_player.attach_app(handle.clone());
 
             app.manage(AppState {
@@ -845,7 +845,7 @@ mod tests {
 
     #[test]
     fn app_state_spotify_player_initialization_and_client_id_sync() {
-        let player = Arc::new(NativeSpotifyPlayer::new(None, Some("initial_id".to_string())));
+        let player = Arc::new(SpotifyConnectPlayer::new(Some("initial_id".to_string())));
         assert_eq!(player.client_id().as_deref(), Some("initial_id"));
 
         player.set_client_id("new_client_id".to_string());
@@ -858,7 +858,7 @@ mod tests {
     #[test]
     fn playback_coordination_pause_and_stop_do_not_panic() {
         let engine = Arc::new(AudioEngine::new());
-        let player = Arc::new(NativeSpotifyPlayer::new(None, None));
+        let player = Arc::new(SpotifyConnectPlayer::new(None));
 
         // Coordination: starting local/yt playback pauses Spotify player
         assert!(player.pause().is_ok());

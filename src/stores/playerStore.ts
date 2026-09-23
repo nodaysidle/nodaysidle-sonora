@@ -76,7 +76,15 @@ const engineTrackFor = async (track: TrackRecord): Promise<EngineTrack> => {
   };
 };
 
-const isSpotifyTrack = (_track: TrackRecord | null | undefined): boolean => false;
+/**
+ * How Spotify tracks play: on the user's Spotify app over Connect, or through the YouTube matcher
+ * when no Spotify device answers. Every non-gapless Spotify start retries Connect first.
+ */
+let spotifyRoute: 'connect' | 'youtube' = 'connect';
+
+/** True for Spotify tracks that Spotify Connect, not Sonora's engine, is playing. */
+const isSpotifyTrack = (track: TrackRecord | null | undefined): boolean =>
+  track?.provider === 'spotify' && spotifyRoute === 'connect';
 
 /** Monotonic token so a slow resolve can never load a track the user has already skipped past. */
 let loadSequence = 0;
@@ -141,8 +149,18 @@ const startAtCursor = async (autoPlay: boolean): Promise<void> => {
   const sequence = ++loadSequence;
   usePlayerStore.setState({ isLoading: true });
   try {
-    if (isSpotifyTrack(track)) {
-      await tauriBridge.spotifyPlay(track.id);
+    let viaConnect = false;
+    if (track.provider === 'spotify') {
+      try {
+        await tauriBridge.spotifyPlay(track.id);
+        viaConnect = true;
+      } catch (error) {
+        if (sequence !== loadSequence) return;
+        showNotice(`Spotify app unavailable (${message(error)}). Playing “${track.title}” via YouTube.`);
+      }
+      spotifyRoute = viaConnect ? 'connect' : 'youtube';
+    }
+    if (viaConnect) {
       void tauriBridge.spotifySetVolume(state.volume).catch(() => {});
     } else {
       const engineTrack = await engineTrackFor(track);
@@ -158,10 +176,10 @@ const startAtCursor = async (autoPlay: boolean): Promise<void> => {
       status: shouldPlay ? 'playing' : 'paused',
       isLoading: false,
       isGapless: false,
-      spotifyDeviceName: isSpotifyTrack(track) ? 'Sonora (Native)' : undefined,
+      spotifyDeviceName: viaConnect ? usePlayerStore.getState().spotifyDeviceName ?? 'Spotify' : undefined,
     });
     if (!shouldPlay && autoPlay) {
-      void (isSpotifyTrack(track) ? tauriBridge.spotifyPause() : tauriBridge.pause()).catch(() => {});
+      void (viaConnect ? tauriBridge.spotifyPause() : tauriBridge.pause()).catch(() => {});
     }
   } catch (error) {
     if (sequence !== loadSequence) return;
@@ -214,7 +232,7 @@ const handleMediaKey = (action: MediaKeyAction): void => {
 };
 
 interface PlayerStore {
-  /** Mixed provider entries. Spotify rows play through Sonora's native Spotify player. */
+  /** Mixed provider entries. Spotify rows play on the Spotify app over Connect, else via YouTube. */
   queue: TrackRecord[];
   /** Play order as indices into `queue`; the identity permutation when shuffle is off. */
   order: number[];
@@ -452,7 +470,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
 
   toggleNormalization: () => {
     if (isSpotifyTrack(get().currentTrack)) {
-      showNotice('Spotify loudness normalization is handled by Sonora\'s native Spotify player.');
+      showNotice('Spotify loudness is controlled by the Spotify app.');
       return;
     }
     const enabled = !get().isNormalizing;
@@ -559,7 +577,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
           isLoading: false,
           positionMs: spotify.progressMs,
           durationMs: spotify.durationMs > 0 ? spotify.durationMs : get().durationMs,
-          spotifyDeviceName: spotify.deviceName ?? 'Sonora (Native)',
+          spotifyDeviceName: spotify.deviceName ?? 'Spotify',
         });
       }),
     );

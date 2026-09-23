@@ -10,12 +10,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use librespot::core::{
-    authentication::Credentials,
-    cache::Cache,
-    config::SessionConfig,
-    session::Session,
-    spotify_id::SpotifyId,
-    spotify_uri::SpotifyUri,
+    authentication::Credentials, cache::Cache, config::SessionConfig, session::Session,
+    spotify_id::SpotifyId, spotify_uri::SpotifyUri,
 };
 use librespot::metadata::{Metadata, Track};
 use librespot::playback::{
@@ -119,7 +115,9 @@ impl NativePlayerInner {
         let mut emit = true;
 
         match event {
-            PlayerEvent::Loading { play_request_id, .. } => {
+            PlayerEvent::Loading {
+                play_request_id, ..
+            } => {
                 *request_id = Some(play_request_id);
                 emit = false;
             }
@@ -149,7 +147,9 @@ impl NativePlayerInner {
                     *last_pos = None;
                 }
             }
-            PlayerEvent::Stopped { play_request_id, .. } => {
+            PlayerEvent::Stopped {
+                play_request_id, ..
+            } => {
                 if !is_current_play_request(*request_id, play_request_id) {
                     emit = false;
                 } else {
@@ -324,7 +324,11 @@ impl NativeSpotifyPlayer {
 
     fn ensure_active_session(&self) -> Result<ActiveSessionTuple, String> {
         {
-            let lock = self.inner.active_session.lock().map_err(|e| e.to_string())?;
+            let lock = self
+                .inner
+                .active_session
+                .lock()
+                .map_err(|e| e.to_string())?;
             if let Some(active) = lock.as_ref() {
                 if !active.session.is_invalid() && !active.player.is_invalid() {
                     return Ok((
@@ -345,7 +349,13 @@ impl NativeSpotifyPlayer {
         let cache = self.inner.cache_dir.as_ref().and_then(|dir| {
             let vol_dir = dir.join("volume");
             let audio_dir = dir.join("audio");
-            Cache::new(None::<PathBuf>, Some(vol_dir), Some(audio_dir), Some(500 * 1024 * 1024)).ok()
+            Cache::new(
+                None::<PathBuf>,
+                Some(vol_dir),
+                Some(audio_dir),
+                Some(500 * 1024 * 1024),
+            )
+            .ok()
         });
 
         let player_config = PlayerConfig {
@@ -357,13 +367,22 @@ impl NativeSpotifyPlayer {
             ..Default::default()
         };
 
-        let current_vol_pct = self.inner.state.lock().unwrap().volume_percent.unwrap_or(100);
+        let current_vol_pct = self
+            .inner
+            .state
+            .lock()
+            .unwrap()
+            .volume_percent
+            .unwrap_or(100);
         let inner_weak = Arc::downgrade(&self.inner);
 
         let (session, player, mixer, event_task) = run_async_block(async move {
             let mut last_err = None;
             let mut session = None;
-            for credentials in [token_credentials, cached_credentials].into_iter().flatten() {
+            for credentials in [token_credentials, cached_credentials]
+                .into_iter()
+                .flatten()
+            {
                 let candidate = Session::new(session_config.clone(), cache.clone());
                 match tokio::time::timeout(
                     Duration::from_secs(15),
@@ -376,7 +395,9 @@ impl NativeSpotifyPlayer {
                         last_err = None;
                         break;
                     }
-                    Ok(Err(e)) => last_err = Some(format!("Failed to connect Spotify session: {e}")),
+                    Ok(Err(e)) => {
+                        last_err = Some(format!("Failed to connect Spotify session: {e}"))
+                    }
                     Err(_) => last_err = Some("Spotify connection timed out after 15s".to_string()),
                 }
             }
@@ -396,12 +417,9 @@ impl NativeSpotifyPlayer {
             let backend_fn = audio_backend::find(None)
                 .ok_or_else(|| "Failed to find audio backend".to_string())?;
 
-            let player = Player::new(
-                player_config,
-                session.clone(),
-                soft_vol,
-                move || backend_fn(None, AudioFormat::F32),
-            );
+            let player = Player::new(player_config, session.clone(), soft_vol, move || {
+                backend_fn(None, AudioFormat::F32)
+            });
 
             let mut event_rx = player.get_player_event_channel();
             let event_task = tokio::spawn(async move {
@@ -495,7 +513,8 @@ impl NativeSpotifyPlayer {
         if state.is_playing {
             if let Some((instant, base_ms)) = *self.inner.last_position_update.lock().unwrap() {
                 let elapsed = instant.elapsed().as_millis() as u64;
-                state.progress_ms = (base_ms + elapsed).min(state.duration_ms.max(base_ms + elapsed));
+                state.progress_ms =
+                    (base_ms + elapsed).min(state.duration_ms.max(base_ms + elapsed));
             }
         }
         state.is_playing = false;
@@ -630,17 +649,32 @@ mod tests {
         let uri1 = "spotify://track/1jzIJcHCXneHw7ojC6LXiF";
         let uri2 = "spotify:track:1jzIJcHCXneHw7ojC6LXiF";
         let uri3 = "1jzIJcHCXneHw7ojC6LXiF";
-        assert_eq!(normalize_spotify_id(uri1).unwrap(), "1jzIJcHCXneHw7ojC6LXiF");
-        assert_eq!(normalize_spotify_id(uri2).unwrap(), "1jzIJcHCXneHw7ojC6LXiF");
-        assert_eq!(normalize_spotify_id(uri3).unwrap(), "1jzIJcHCXneHw7ojC6LXiF");
+        assert_eq!(
+            normalize_spotify_id(uri1).unwrap(),
+            "1jzIJcHCXneHw7ojC6LXiF"
+        );
+        assert_eq!(
+            normalize_spotify_id(uri2).unwrap(),
+            "1jzIJcHCXneHw7ojC6LXiF"
+        );
+        assert_eq!(
+            normalize_spotify_id(uri3).unwrap(),
+            "1jzIJcHCXneHw7ojC6LXiF"
+        );
     }
 
     #[test]
     fn parses_web_urls_and_strips_queries() {
         let url1 = "https://open.spotify.com/track/1jzIJcHCXneHw7ojC6LXiF?si=abc123xyz";
         let url2 = "http://spotify.com/track/1jzIJcHCXneHw7ojC6LXiF";
-        assert_eq!(normalize_spotify_id(url1).unwrap(), "1jzIJcHCXneHw7ojC6LXiF");
-        assert_eq!(normalize_spotify_id(url2).unwrap(), "1jzIJcHCXneHw7ojC6LXiF");
+        assert_eq!(
+            normalize_spotify_id(url1).unwrap(),
+            "1jzIJcHCXneHw7ojC6LXiF"
+        );
+        assert_eq!(
+            normalize_spotify_id(url2).unwrap(),
+            "1jzIJcHCXneHw7ojC6LXiF"
+        );
     }
 
     #[test]

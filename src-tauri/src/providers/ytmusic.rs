@@ -985,7 +985,11 @@ mod tests {
         for (title, artist, duration_ms) in [
             ("Буйно голова", "Gio Pika", 128_000),
             ("MANCARSI", "Coma_Cose", 229_000),
-            ("rockstar (feat. 21 Savage)", "Post Malone, 21 Savage", 218_000),
+            (
+                "rockstar (feat. 21 Savage)",
+                "Post Malone, 21 Savage",
+                218_000,
+            ),
         ] {
             let started = std::time::Instant::now();
             let stream_url = provider

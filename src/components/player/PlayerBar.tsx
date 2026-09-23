@@ -155,9 +155,11 @@ export const PlayerBar: React.FC = () => {
               </p>
               <p className="text-[10px] text-zinc-600 truncate">
                 {currentTrack.provider === 'spotify'
-                  ? (spotifyDeviceName && spotifyDeviceName !== 'Sonora (Native)'
-                      ? `Spotify · ${spotifyDeviceName}`
-                      : 'Spotify')
+                  ? spotifyDeviceName
+                    ? spotifyDeviceName === 'Spotify'
+                      ? 'Spotify'
+                      : `Spotify · ${spotifyDeviceName}`
+                    : 'Spotify · via YouTube'
                   : currentTrack.provider === 'ytmusic'
                     ? 'YouTube Music'
                     : 'Local library'}

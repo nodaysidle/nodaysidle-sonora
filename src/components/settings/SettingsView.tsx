@@ -156,7 +156,6 @@ export const SettingsView: React.FC = () => {
               </div>
               <p className="text-[11px] text-zinc-300">
                 If your browser didn't open automatically, click below to authorize in Spotify.
-                Connect finishes with a second login so native playback can use Spotify's audio keys.
               </p>
               <div className="flex items-center space-x-2">
                 <button
@@ -259,8 +258,9 @@ export const SettingsView: React.FC = () => {
               </span>
             </p>
             <p className="text-[11px] text-zinc-500 leading-relaxed">
-              Spotify tracks play inside Sonora through its native Spotify player. Spotify-to-local
-              and local-to-Spotify queue changes advance after the audible track ends.
+              Spotify tracks play on your Spotify app (Premium) over Spotify Connect: keep Spotify
+              open on this Mac or another device. With no Spotify device available, Sonora plays the
+              matching recording from YouTube instead.
             </p>
           </div>
         </Section>
@@ -297,7 +297,8 @@ export const SettingsView: React.FC = () => {
 
           <p className="text-[11px] text-zinc-500 leading-relaxed">
             Local and YouTube Music tracks are gapless only when the next decoder is successfully
-            pre-buffered. Spotify playback uses Sonora's native transport controls.
+            pre-buffered. Spotify Connect playback follows the Spotify app's own volume and
+            loudness settings.
           </p>
         </Section>
 

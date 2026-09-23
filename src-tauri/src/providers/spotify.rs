@@ -1,9 +1,12 @@
 //! Spotify integration: OAuth 2.0 PKCE against a loopback redirect, token storage in the OS
 //! keyring, and the Web API for library browsing.
 //!
-//! Playback uses Sonora's native Librespot player; the Web API handles library and playlist work.
+//! Playback drives the user's Spotify app over Spotify Connect; the Web API also handles library
+//! and playlist work.
 
+pub mod connect_player;
 pub mod native_player;
+pub use connect_player::SpotifyConnectPlayer;
 pub use native_player::NativeSpotifyPlayer;
 
 use super::{
@@ -80,9 +83,14 @@ fn now_seconds() -> u64 {
 
 fn fallback_tokens_path() -> std::path::PathBuf {
     if let Ok(config_home) = std::env::var("XDG_CONFIG_HOME") {
-        std::path::PathBuf::from(config_home).join("sonora").join("spotify_tokens.json")
+        std::path::PathBuf::from(config_home)
+            .join("sonora")
+            .join("spotify_tokens.json")
     } else if let Ok(home) = std::env::var("HOME") {
-        std::path::PathBuf::from(home).join(".config").join("sonora").join("spotify_tokens.json")
+        std::path::PathBuf::from(home)
+            .join(".config")
+            .join("sonora")
+            .join("spotify_tokens.json")
     } else {
         std::path::PathBuf::from("spotify_tokens.json")
     }
@@ -94,8 +102,7 @@ fn store_tokens_fallback(tokens: &SpotifyTokens) -> Result<(), String> {
         let _ = std::fs::create_dir_all(parent);
     }
     let json = serde_json::to_string(tokens).map_err(|e| e.to_string())?;
-    std::fs::write(&path, json)
-        .map_err(|e| format!("failed to write fallback Spotify tokens: {e}"))
+    std::fs::write(&path, json).map_err(|e| format!("failed to write fallback Spotify tokens: {e}"))
 }
 
 fn load_tokens_fallback() -> Result<Option<SpotifyTokens>, String> {
@@ -306,7 +313,9 @@ pub fn authenticate_with_emitter<F: Fn(&str) + Send + Sync + 'static>(
 ) -> Result<SpotifyTokens, String> {
     let client_id = client_id_raw.trim();
     if client_id.is_empty() {
-        return Err("Add your Spotify app's Client ID in Settings first, then connect.".to_string());
+        return Err(
+            "Add your Spotify app's Client ID in Settings first, then connect.".to_string(),
+        );
     }
 
     let listener = TcpListener::bind(("127.0.0.1", REDIRECT_PORT)).map_err(|e| {
@@ -414,7 +423,6 @@ pub fn authenticate_with_emitter<F: Fn(&str) + Send + Sync + 'static>(
         expires_at: now_seconds() + response.expires_in,
     };
     store_tokens(&tokens)?;
-    authenticate_librespot()?;
     Ok(tokens)
 }
 
@@ -443,7 +451,14 @@ fn open_in_browser(url: &str) -> Result<(), String> {
         if spawn_clean("gio", &["open", url]) {
             return Ok(());
         }
-        for b in &["firefox", "google-chrome-stable", "google-chrome", "chromium", "brave", "zen-browser"] {
+        for b in &[
+            "firefox",
+            "google-chrome-stable",
+            "google-chrome",
+            "chromium",
+            "brave",
+            "zen-browser",
+        ] {
             if spawn_clean(b, &[url]) {
                 return Ok(());
             }
@@ -642,6 +657,39 @@ fn parse_playback_state(value: &Value) -> SpotifyPlaybackState {
     }
 }
 
+/// The device Sonora should play on: the active one, else a desktop Spotify app, else a web
+/// player, else any device that accepts remote control.
+fn choose_device(devices: &[Value]) -> Option<String> {
+    let usable: Vec<&Value> = devices
+        .iter()
+        .filter(|device| device.get("is_restricted").and_then(Value::as_bool) != Some(true))
+        .collect();
+    let text = |device: &Value, key: &str| {
+        device
+            .get(key)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+    };
+    usable
+        .iter()
+        .find(|device| device.get("is_active").and_then(Value::as_bool) == Some(true))
+        .or_else(|| {
+            usable
+                .iter()
+                .find(|device| text(device, "type") == "computer")
+        })
+        .or_else(|| {
+            usable.iter().find(|device| {
+                let name = text(device, "name");
+                name.contains("web player") || name.contains("safari")
+            })
+        })
+        .or_else(|| usable.first())
+        .and_then(|device| device.get("id").and_then(Value::as_str))
+        .map(str::to_owned)
+}
+
 pub struct SpotifyProvider {
     pub client_id: String,
 }
@@ -751,26 +799,7 @@ impl SpotifyProvider {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        let usable: Vec<_> = devices
-            .iter()
-            .filter(|device| device.get("is_restricted").and_then(Value::as_bool) != Some(true))
-            .collect();
-        let preferred = usable
-            .iter()
-            .copied()
-            .find(|device| device.get("is_active").and_then(Value::as_bool) == Some(true))
-            .or_else(|| {
-                usable.iter().copied().find(|device| {
-                    device.get("name").and_then(Value::as_str).map(|name| {
-                        let name = name.to_ascii_lowercase();
-                        name.contains("web player") || name.contains("safari")
-                    }) == Some(true)
-                })
-            })
-            .or_else(|| (usable.len() == 1).then(|| usable[0]));
-        Ok(preferred
-            .and_then(|device| device.get("id").and_then(Value::as_str))
-            .map(str::to_owned))
+        Ok(choose_device(&devices))
     }
 
     fn player_request(
@@ -1032,6 +1061,23 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(track.title, "Song");
+    }
+
+    #[test]
+    fn chooses_a_playable_device_even_when_none_is_active() {
+        let devices = vec![
+            serde_json::json!({ "id": "tv", "name": "Living Room TV", "type": "TV", "is_active": false }),
+            serde_json::json!({ "id": "locked", "name": "Car", "type": "Automobile", "is_restricted": true }),
+            serde_json::json!({ "id": "mac", "name": "MacBook", "type": "Computer", "is_active": false }),
+        ];
+        assert_eq!(choose_device(&devices).as_deref(), Some("mac"));
+
+        let mut with_active = devices.clone();
+        with_active[0]["is_active"] = serde_json::json!(true);
+        assert_eq!(choose_device(&with_active).as_deref(), Some("tv"));
+
+        assert_eq!(choose_device(&devices[1..2]), None);
+        assert_eq!(choose_device(&[]), None);
     }
 
     #[test]
