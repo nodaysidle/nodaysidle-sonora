@@ -66,8 +66,7 @@ pub struct TrackAudioSource {
     /// Direct, seekable URL that the Rust decoder can read over HTTP.
     pub url: String,
     pub mime_type: Option<String>,
-    /// Set when the provider only exposes a remote-playback handle (Spotify Connect), in which
-    /// case Sonora drives the provider's own player instead of decoding audio itself.
+    /// Set when a provider owns playback instead of exposing a stream to the generic decoder.
     pub remote_playback: bool,
 }
 
@@ -79,11 +78,10 @@ pub trait MusicProvider: Send + Sync {
     async fn get_user_playlists(&self) -> Result<Vec<ProviderPlaylist>, String>;
 }
 
-/// Spotify's Web API is the only compliant way to reach a user's library: audio stays inside the
-/// user's own Spotify client, and Sonora drives it over Connect. DRM-protected streams are
-/// deliberately never downloaded or decoded here.
+/// Spotify's Web API serves library metadata; native playback is owned by Librespot rather than
+/// the generic Symphonia decoder.
 pub fn spotify_cannot_decode_locally() -> &'static str {
-    "Spotify audio is DRM-protected; Sonora controls the user's Spotify client over Connect"
+    "Spotify audio is handled by Sonora's native Spotify player"
 }
 
 #[cfg(test)]

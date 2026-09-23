@@ -19,8 +19,10 @@ Thumbs.db
 *.local
 *.log
 
-# IDE
+# IDE & Agent Caches
 .idea/
 .vscode/
 *.swp
 *.swo
+.serena/
+

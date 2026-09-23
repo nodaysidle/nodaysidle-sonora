@@ -5483,6 +5483,7 @@ dependencies = [
  "librespot",
  "lindera",
  "lofty",
+ "log",
  "notify",
  "pinyin",
  "rand 0.8.8",

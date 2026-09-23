@@ -93,6 +93,7 @@ export const LibraryView: React.FC = () => {
     tracks,
     albums,
     artists,
+    playlists,
     activeTab,
     activeProviderFilter,
     searchQuery,
@@ -108,6 +109,7 @@ export const LibraryView: React.FC = () => {
     setSearchQuery,
     setSort,
     refresh,
+    loadPlaylists,
     clearError,
     pickAndScan,
   } = useLibraryStore();
@@ -118,6 +120,26 @@ export const LibraryView: React.FC = () => {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    if (spotifyConnected && searchQuery.trim() && playlists.length === 0) void loadPlaylists();
+  }, [loadPlaylists, playlists.length, searchQuery, spotifyConnected]);
+
+  const addToPlaylist = async (track: TrackRecord, playlistId: string) => {
+    if (!playlistId) return;
+    const playlist = playlists.find((item) => item.id === playlistId);
+    try {
+      await tauriBridge.spotifyAddToPlaylist(playlistId, track.id);
+      setNotice(`Added “${track.title}” to ${playlist?.title ?? 'playlist'}.`);
+      useLibraryStore.setState((state) => ({
+        playlists: state.playlists.map((item) =>
+          item.id === playlistId ? { ...item, trackCount: item.trackCount + 1 } : item,
+        ),
+      }));
+    } catch (caught) {
+      setNotice(errorMessage(caught));
+    }
+  };
 
   const playAlbum = async (album: AlbumRecord) => {
     try {
@@ -169,6 +191,7 @@ export const LibraryView: React.FC = () => {
         : 'Search titles, artists, albums…';
 
   const renderTracks = () => {
+    const showPlaylistAction = Boolean(searchQuery.trim()) && spotifyConnected;
     if (tracks.length === 0) {
       if (searchQuery) {
         return <EmptyState title="No matches" body={`Nothing in this source matches “${searchQuery}”.`} />;
@@ -182,7 +205,7 @@ export const LibraryView: React.FC = () => {
         ) : (
           <EmptyState
             title="Spotify is not connected"
-            body="Add your Spotify app's Client ID in Settings, then press Connect. Spotify audio plays through your own Spotify client."
+            body="Add your Spotify app's Client ID in Settings, then press Connect. Spotify audio plays natively inside Sonora."
           />
         );
       }
@@ -229,6 +252,7 @@ export const LibraryView: React.FC = () => {
                 onSort={setSort}
                 className="w-20 text-right"
               />
+              {showPlaylistAction && <th className="w-44 py-2.5 px-3 uppercase tracking-wider">Playlist</th>}
             </tr>
           </thead>
           <tbody className="divide-y divide-white/5 text-xs">
@@ -273,6 +297,32 @@ export const LibraryView: React.FC = () => {
                   <td className="py-3 px-3 text-right font-mono text-zinc-400 text-[11px]">
                     {formatDuration(track.durationMs)}
                   </td>
+                  {showPlaylistAction && (
+                    <td className="py-2 px-3" onClick={(event) => event.stopPropagation()}>
+                      {track.provider === 'spotify' ? (
+                        <select
+                          defaultValue=""
+                          aria-label={`Add ${track.title} to playlist`}
+                          className="w-full rounded-md bg-zinc-900 border border-white/10 px-2 py-1 text-[11px] text-zinc-300 focus:outline-none accent-focus"
+                          onKeyDown={(event) => event.stopPropagation()}
+                          onChange={(event) => {
+                            const playlistId = event.currentTarget.value;
+                            event.currentTarget.value = '';
+                            void addToPlaylist(track, playlistId);
+                          }}
+                        >
+                          <option value="">Add to playlist…</option>
+                          {playlists.map((playlist) => (
+                            <option key={playlist.id} value={playlist.id}>
+                              {playlist.title}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <span className="text-zinc-700">—</span>
+                      )}
+                    </td>
+                  )}
                 </tr>
               );
             })}

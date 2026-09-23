@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertCircle,
   ListMusic,
@@ -24,68 +24,66 @@ const Scrubber: React.FC = () => {
   const currentTrack = usePlayerStore((s) => s.currentTrack);
   const seek = usePlayerStore((s) => s.seek);
 
-  const barRef = useRef<HTMLDivElement | null>(null);
   const [dragMs, setDragMs] = useState<number | null>(null);
-  const [hoverMs, setHoverMs] = useState<number | null>(null);
+  const seekRef = useRef<HTMLInputElement>(null);
 
   const duration = durationMs || currentTrack?.durationMs || 0;
   const shownMs = dragMs ?? positionMs;
-  const percent = duration > 0 ? Math.min(100, (shownMs / duration) * 100) : 0;
-
-  const msAtClientX = (clientX: number): number => {
-    const element = barRef.current;
-    if (!element || duration <= 0) return 0;
-    const rect = element.getBoundingClientRect();
-    const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
-    return Math.round(ratio * duration);
+  const commit = (value: number): void => {
+    if (duration <= 0) return;
+    seek(value);
+    setDragMs(null);
   };
+
+  useEffect(() => {
+    const el = seekRef.current;
+    if (!el) return;
+    const onWheel = (event: WheelEvent) => event.preventDefault();
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, []);
 
   return (
     <div className="w-full flex items-center gap-3 text-[10px] font-mono text-zinc-400">
       <span>{formatDuration(shownMs)}</span>
-      <div
-        ref={barRef}
-        role="slider"
+      <input
+        ref={seekRef}
+        type="range"
+        min={0}
+        max={Math.max(1, duration)}
+        step={1000}
+        value={shownMs}
+        disabled={duration <= 0}
         aria-label="Seek"
         aria-valuemin={0}
-        aria-valuemax={duration}
+        aria-valuemax={Math.max(1, duration)}
         aria-valuenow={shownMs}
-        tabIndex={0}
-        className="relative flex-1 h-4 flex items-center cursor-pointer group"
-        onPointerDown={(event) => {
-          event.currentTarget.setPointerCapture(event.pointerId);
-          setDragMs(msAtClientX(event.clientX));
-        }}
-        onPointerMove={(event) => {
-          const value = msAtClientX(event.clientX);
-          setHoverMs(value);
-          if (dragMs !== null) setDragMs(value);
-        }}
-        onPointerUp={(event) => {
-          if (dragMs === null) return;
-          event.currentTarget.releasePointerCapture(event.pointerId);
-          seek(msAtClientX(event.clientX));
-          setDragMs(null);
-        }}
-        onPointerLeave={() => setHoverMs(null)}
+        aria-disabled={duration <= 0}
+        className="accent-range flex-1 cursor-pointer disabled:cursor-default disabled:opacity-40"
+        onChange={(event) => setDragMs(Number(event.currentTarget.value))}
         onKeyDown={(event) => {
-          if (event.key === 'ArrowRight') seek(Math.min(duration, shownMs + 5000));
-          if (event.key === 'ArrowLeft') seek(Math.max(0, shownMs - 5000));
+          if (duration <= 0) return;
+          const jump = Math.max(1000, Math.round(duration * 0.1));
+          if (event.key === 'Home') {
+            event.preventDefault();
+            commit(0);
+          } else if (event.key === 'End') {
+            event.preventDefault();
+            commit(duration);
+          } else if (event.key === 'PageUp') {
+            event.preventDefault();
+            commit(Math.min(duration, shownMs + jump));
+          } else if (event.key === 'PageDown') {
+            event.preventDefault();
+            commit(Math.max(0, shownMs - jump));
+          }
         }}
-      >
-        <div className="w-full h-1.5 bg-white/10 rounded-full overflow-hidden">
-          <div className="h-full accent-bg rounded-full" style={{ width: `${percent}%` }} />
-        </div>
-        {/* Hover timestamp tooltip */}
-        {hoverMs !== null && duration > 0 && (
-          <div
-            className="absolute -top-7 px-1.5 py-0.5 rounded bg-zinc-900/90 border border-white/10 text-[10px] font-mono text-zinc-200 pointer-events-none -translate-x-1/2"
-            style={{ left: `${(hoverMs / duration) * 100}%` }}
-          >
-            {formatDuration(hoverMs)}
-          </div>
-        )}
-      </div>
+        onPointerUp={(event) => commit(Number(event.currentTarget.value))}
+        onKeyUp={(event) => commit(Number(event.currentTarget.value))}
+        onBlur={(event) => {
+          if (dragMs !== null) commit(Number(event.currentTarget.value));
+        }}
+      />
       <span>{formatDuration(duration)}</span>
     </div>
   );
@@ -159,7 +157,7 @@ export const PlayerBar: React.FC = () => {
                 {currentTrack.provider === 'spotify'
                   ? (spotifyDeviceName && spotifyDeviceName !== 'Sonora (Native)'
                       ? `Spotify · ${spotifyDeviceName}`
-                      : 'Spotify (Native)')
+                      : 'Spotify')
                   : currentTrack.provider === 'ytmusic'
                     ? 'YouTube Music'
                     : 'Local library'}
@@ -251,7 +249,7 @@ export const PlayerBar: React.FC = () => {
             isGapless && nextTrack
               ? `Gapless: “${nextTrack.title}” is pre-buffered`
               : currentTrack?.provider === 'spotify'
-                ? 'Spotify playback is controlled by your Spotify client; Sonora cannot pre-buffer the next track'
+                ? 'Spotify is playing natively; provider changes advance after the current track ends'
                 : 'Gapless pre-buffering is not ready for the next track'
           }
         >

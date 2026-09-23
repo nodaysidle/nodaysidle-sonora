@@ -76,7 +76,7 @@ const engineTrackFor = async (track: TrackRecord): Promise<EngineTrack> => {
   };
 };
 
-const isSpotifyTrack = (track: TrackRecord | null | undefined): boolean => track?.provider === 'spotify';
+const isSpotifyTrack = (_track: TrackRecord | null | undefined): boolean => false;
 
 /** Monotonic token so a slow resolve can never load a track the user has already skipped past. */
 let loadSequence = 0;
@@ -141,9 +141,16 @@ const startAtCursor = async (autoPlay: boolean): Promise<void> => {
   const sequence = ++loadSequence;
   usePlayerStore.setState({ isLoading: true });
   try {
-    const engineTrack = await engineTrackFor(track);
-    if (sequence !== loadSequence) return;
-    await tauriBridge.loadTrack(engineTrack, autoPlay);
+    if (isSpotifyTrack(track)) {
+      await tauriBridge.spotifyPlay(track.id);
+      void tauriBridge.spotifySetVolume(state.volume).catch(() => {});
+    } else {
+      const engineTrack = await engineTrackFor(track);
+      if (sequence !== loadSequence) return;
+      await tauriBridge.loadTrack(engineTrack, autoPlay);
+      if (sequence !== loadSequence) return;
+      await tauriBridge.setVolume(usePlayerStore.getState().volume);
+    }
     if (sequence !== loadSequence) return;
     const currentStatus = usePlayerStore.getState().status;
     const shouldPlay = currentStatus !== 'paused' && autoPlay;
@@ -151,10 +158,10 @@ const startAtCursor = async (autoPlay: boolean): Promise<void> => {
       status: shouldPlay ? 'playing' : 'paused',
       isLoading: false,
       isGapless: false,
-      spotifyDeviceName: undefined,
+      spotifyDeviceName: isSpotifyTrack(track) ? 'Sonora (Native)' : undefined,
     });
     if (!shouldPlay && autoPlay) {
-      void tauriBridge.pause().catch(() => {});
+      void (isSpotifyTrack(track) ? tauriBridge.spotifyPause() : tauriBridge.pause()).catch(() => {});
     }
   } catch (error) {
     if (sequence !== loadSequence) return;
@@ -165,7 +172,7 @@ const startAtCursor = async (autoPlay: boolean): Promise<void> => {
   void syncPreRoll();
 };
 
-const handleTrackEnded = (endedTrackId: string): void => {
+const handleTrackEnded = (endedTrackId: string, gapless: boolean): void => {
   const state = usePlayerStore.getState();
   if (state.order.length === 0) return;
   // A stale or duplicated event would otherwise advance the queue twice.
@@ -173,15 +180,15 @@ const handleTrackEnded = (endedTrackId: string): void => {
 
   if (state.repeatMode === 'track') {
     usePlayerStore.setState({ positionMs: 0, status: 'playing' });
-    if (isSpotifyTrack(state.currentTrack)) void startAtCursor(true);
-    else void syncPreRoll();
+    if (gapless) void syncPreRoll();
+    else void startAtCursor(true);
     return;
   }
 
   const next = state.cursor + 1;
   const position = next < state.order.length ? next : state.repeatMode === 'queue' ? 0 : -1;
   if (position < 0) {
-    if (isSpotifyTrack(state.currentTrack)) void tauriBridge.spotifyPause().catch(() => {});
+    if (isSpotifyTrack(state.currentTrack)) void tauriBridge.spotifyStop().catch(() => {});
     usePlayerStore.setState({ status: 'stopped', positionMs: 0 });
     return;
   }
@@ -195,8 +202,8 @@ const handleTrackEnded = (endedTrackId: string): void => {
     durationMs: track.durationMs,
     status: 'playing',
   });
-  if (track.provider === 'spotify') void startAtCursor(true);
-  else void syncPreRoll();
+  if (gapless) void syncPreRoll();
+  else void startAtCursor(true);
 };
 
 const handleMediaKey = (action: MediaKeyAction): void => {
@@ -207,7 +214,7 @@ const handleMediaKey = (action: MediaKeyAction): void => {
 };
 
 interface PlayerStore {
-  /** Mixed provider entries. Spotify rows are controlled through Spotify Connect. */
+  /** Mixed provider entries. Spotify rows play through Sonora's native Spotify player. */
   queue: TrackRecord[];
   /** Play order as indices into `queue`; the identity permutation when shuffle is off. */
   order: number[];
@@ -310,22 +317,30 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
     if (isLoading) {
       if (status === 'playing') {
         set({ status: 'paused' });
-        void tauriBridge.pause().catch((error) => showNotice(message(error)));
+        void (isSpotifyTrack(currentTrack) ? tauriBridge.spotifyPause() : tauriBridge.pause()).catch(
+          (error) => showNotice(message(error)),
+        );
       } else {
         set({ status: 'playing' });
-        void tauriBridge.play().catch((error) => showNotice(message(error)));
+        void (isSpotifyTrack(currentTrack) ? tauriBridge.spotifyResume() : tauriBridge.play()).catch(
+          (error) => showNotice(message(error)),
+        );
       }
       return;
     }
 
     if (status === 'playing') {
       set({ status: 'paused' });
-      void tauriBridge.pause().catch((error) => showNotice(message(error)));
+      void (isSpotifyTrack(currentTrack) ? tauriBridge.spotifyPause() : tauriBridge.pause()).catch(
+        (error) => showNotice(message(error)),
+      );
       return;
     }
     if (status === 'paused') {
       set({ status: 'playing' });
-      void tauriBridge.play().catch((error) => showNotice(message(error)));
+      void (isSpotifyTrack(currentTrack) ? tauriBridge.spotifyResume() : tauriBridge.play()).catch(
+        (error) => showNotice(message(error)),
+      );
       return;
     }
     // The engine stopped (queue drained, or nothing loaded yet): reload from the top.
@@ -342,7 +357,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
           ? 0
           : -1;
     if (position < 0) {
-      void tauriBridge.stop().catch((error) => showNotice(message(error)));
+      void (isSpotifyTrack(state.currentTrack) ? tauriBridge.spotifyStop() : tauriBridge.stop()).catch(
+        (error) => showNotice(message(error)),
+      );
       set({ status: 'stopped', positionMs: 0, nextTrack: null, isGapless: false });
       return;
     }
@@ -366,7 +383,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
     // Past the three-second mark "previous" restarts the track, like every other player.
     if (state.positionMs > 3000 || state.cursor === 0) {
       set({ positionMs: 0 });
-      void tauriBridge.seek(0).catch((error) => showNotice(message(error)));
+      void (isSpotifyTrack(state.currentTrack) ? tauriBridge.spotifySeek(0) : tauriBridge.seek(0)).catch(
+        (error) => showNotice(message(error)),
+      );
       return;
     }
     const position = state.cursor - 1;
@@ -387,7 +406,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
   seek: (positionMs) => {
     set({ positionMs });
     const target = Math.max(0, Math.round(positionMs));
-    void tauriBridge.seek(target).catch((error) => showNotice(message(error)));
+    void (isSpotifyTrack(get().currentTrack) ? tauriBridge.spotifySeek(target) : tauriBridge.seek(target)).catch(
+      (error) => showNotice(message(error)),
+    );
   },
 
   setVolume: (volume) => {
@@ -395,7 +416,10 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
     const state = get();
     const beforeMute = clamped > 0 ? clamped : state.volumeBeforeMute || 0.85;
     set({ volume: clamped, isMuted: clamped === 0, volumeBeforeMute: beforeMute });
-    void tauriBridge.setVolume(clamped).catch((error) => showNotice(message(error)));
+    const update = isSpotifyTrack(state.currentTrack)
+      ? tauriBridge.spotifySetVolume(clamped)
+      : tauriBridge.setVolume(clamped);
+    void update.catch((error) => showNotice(message(error)));
   },
 
   toggleMute: () => {
@@ -428,7 +452,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
 
   toggleNormalization: () => {
     if (isSpotifyTrack(get().currentTrack)) {
-      showNotice('Spotify loudness is controlled by the Spotify client.');
+      showNotice('Spotify loudness normalization is handled by Sonora\'s native Spotify player.');
       return;
     }
     const enabled = !get().isNormalizing;
@@ -505,6 +529,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
 
     void attach(
       tauriBridge.onPlaybackProgress((progress) => {
+        if (isSpotifyTrack(get().currentTrack)) return;
         set({
           positionMs: progress.positionMs,
           durationMs: progress.durationMs > 0 ? progress.durationMs : get().durationMs,
@@ -513,6 +538,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
     );
     void attach(
       tauriBridge.onPlaybackStatus((engine) => {
+        if (isSpotifyTrack(get().currentTrack)) return;
         if (get().isLoading) return;
         set({
           status: engine.status,
@@ -523,7 +549,21 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
         });
       }),
     );
-    void attach(tauriBridge.onTrackEnded(({ trackId }) => handleTrackEnded(trackId)));
+    void attach(
+      tauriBridge.onSpotifyPlaybackState((spotify) => {
+        const current = get().currentTrack;
+        if (!isSpotifyTrack(current) || (spotify.track && spotify.track.id !== current?.id)) return;
+        if (get().isLoading && !spotify.isPlaying) return;
+        set({
+          status: spotify.isPlaying ? 'playing' : 'paused',
+          isLoading: false,
+          positionMs: spotify.progressMs,
+          durationMs: spotify.durationMs > 0 ? spotify.durationMs : get().durationMs,
+          spotifyDeviceName: spotify.deviceName ?? 'Sonora (Native)',
+        });
+      }),
+    );
+    void attach(tauriBridge.onTrackEnded(({ trackId, gapless }) => handleTrackEnded(trackId, gapless)));
     void attach(tauriBridge.onMediaKey(({ action }) => handleMediaKey(action)));
 
     // A freshly started engine sits at its own defaults, so push what the UI is already showing.

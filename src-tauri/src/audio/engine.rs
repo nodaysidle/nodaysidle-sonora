@@ -119,6 +119,8 @@ pub struct Shared {
     /// Total frames the decoder has handed to the ring. Monotonic, on the same timeline as
     /// `frames_played`, so `frames_played >= pushed_total` means the ring has fully drained.
     pushed_total: AtomicU64,
+    /// A non-gapless completion waiting for the output callback to consume the audible tail.
+    pending_ended: Mutex<Option<String>>,
     /// While set, the output callback emits silence and consumes nothing, so a pause freezes both
     /// the audio and the position immediately rather than draining the ring first.
     paused: AtomicBool,
@@ -146,6 +148,34 @@ impl Shared {
     }
 }
 
+const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
+const HTTP_READ_TIMEOUT: Duration = Duration::from_secs(15);
+
+fn http_io_error(err: impl std::fmt::Display) -> std::io::Error {
+    let msg = err.to_string();
+    let lower = msg.to_ascii_lowercase();
+    let kind = if lower.contains("timed out") || lower.contains("timeout") {
+        std::io::ErrorKind::TimedOut
+    } else {
+        std::io::ErrorKind::Other
+    };
+    std::io::Error::new(kind, msg)
+}
+
+fn is_unrecoverable_stream_error(err: &SymphoniaError) -> bool {
+    matches!(
+        err,
+        SymphoniaError::IoError(e) if matches!(
+            e.kind(),
+            std::io::ErrorKind::UnexpectedEof
+                | std::io::ErrorKind::TimedOut
+                | std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::ConnectionAborted
+                | std::io::ErrorKind::BrokenPipe
+        )
+    )
+}
+
 /// `symphonia::core::io::MediaSource` over HTTP, so YouTube Music stream URLs decode through the
 /// same pipeline as local files. Keeps one response open for sequential reads and re-requests a
 /// byte range only when the decoder seeks.
@@ -160,7 +190,8 @@ struct HttpSource {
 impl HttpSource {
     fn open(url: &str) -> Result<Self, String> {
         let client = reqwest::blocking::Client::builder()
-            .timeout(None)
+            .connect_timeout(HTTP_CONNECT_TIMEOUT)
+            .timeout(HTTP_READ_TIMEOUT)
             .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko)")
             .build()
             .map_err(|e| e.to_string())?;
@@ -218,11 +249,33 @@ impl HttpSource {
 impl Read for HttpSource {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         if self.body.is_none() {
-            self.reopen_from(self.pos)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            self.reopen_from(self.pos).map_err(http_io_error)?;
         }
-        let body = self.body.as_mut().expect("reopened above");
-        let n = body.read(buf)?;
+        let n = match self.body.as_mut().expect("reopened above").read(buf) {
+            Ok(n) => n,
+            Err(first_error) => {
+                self.body = None;
+                self.reopen_from(self.pos).map_err(http_io_error)?;
+                self.body
+                    .as_mut()
+                    .expect("reopened above")
+                    .read(buf)
+                    .map_err(|retry_error| {
+                        std::io::Error::new(
+                            if retry_error.kind() == std::io::ErrorKind::TimedOut
+                                || first_error.kind() == std::io::ErrorKind::TimedOut
+                            {
+                                std::io::ErrorKind::TimedOut
+                            } else {
+                                retry_error.kind()
+                            },
+                            format!(
+                                "stream read failed after reconnect ({first_error}); retry failed: {retry_error}"
+                            ),
+                        )
+                    })?
+            }
+        };
         self.pos += n as u64;
         Ok(n)
     }
@@ -236,8 +289,7 @@ impl Seek for HttpSource {
             SeekFrom::Current(n) => self.pos as i64 + n,
         }
         .max(0) as u64;
-        self.reopen_from(target)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        self.reopen_from(target).map_err(http_io_error)?;
         Ok(target)
     }
 }
@@ -472,9 +524,7 @@ impl PlayingTrack {
                     consecutive_errors = 0;
                     packet
                 }
-                Err(SymphoniaError::IoError(e))
-                    if e.kind() == std::io::ErrorKind::UnexpectedEof =>
-                {
+                Err(err) if is_unrecoverable_stream_error(&err) => {
                     self.exhausted = true;
                     break;
                 }
@@ -512,9 +562,7 @@ impl PlayingTrack {
                     gain.process(&mut self.scratch, rate);
                     self.pending.extend_from_slice(&self.scratch);
                 }
-                Err(SymphoniaError::IoError(e))
-                    if e.kind() == std::io::ErrorKind::UnexpectedEof =>
-                {
+                Err(err) if is_unrecoverable_stream_error(&err) => {
                     self.exhausted = true;
                     break;
                 }
@@ -694,6 +742,10 @@ impl Core {
         if self.advance_to_next(shared) {
             Refill::Advanced(ended)
         } else {
+            *shared
+                .pending_ended
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = ended;
             Refill::Finished
         }
     }
@@ -749,6 +801,7 @@ impl AudioEngine {
             output_channels: AtomicU32::new(2),
             drained: AtomicBool::new(true),
             pushed_total: AtomicU64::new(0),
+            pending_ended: Mutex::new(None),
             paused: AtomicBool::new(true),
             app: Mutex::new(None),
         });
@@ -779,6 +832,19 @@ impl AudioEngine {
                 loop {
                     std::thread::sleep(Duration::from_millis(100));
                     let snapshot = shared.snapshot();
+                    if snapshot.status == PlaybackStatus::Stopped {
+                        if let Some(track_id) = shared
+                            .pending_ended
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .take()
+                        {
+                            let _ = app.emit(
+                                EVENT_TRACK_ENDED,
+                                serde_json::json!({ "trackId": track_id, "gapless": false }),
+                            );
+                        }
+                    }
                     let _ = app.emit(
                         EVENT_PROGRESS,
                         PlaybackProgress {
@@ -963,7 +1029,10 @@ fn run_audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>) {
             Refill::Produced => {}
             Refill::Advanced(ended) => {
                 if let Some(id) = ended {
-                    shared.emit(EVENT_TRACK_ENDED, serde_json::json!({ "trackId": id }));
+                    shared.emit(
+                        EVENT_TRACK_ENDED,
+                        serde_json::json!({ "trackId": id, "gapless": true }),
+                    );
                 }
                 continue;
             }
@@ -1013,6 +1082,10 @@ fn handle_command(core: &mut Core, cmd: Cmd, shared: &Arc<Shared>, ring: &Arc<Ar
     match cmd {
         Cmd::Load { track, auto_play } => {
             drain(ring);
+            *shared
+                .pending_ended
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = None;
             shared.frames_played.store(0, Ordering::Relaxed);
             shared.track_anchor.store(0, Ordering::Relaxed);
             shared.anchor_ms.store(0, Ordering::Relaxed);
@@ -1202,6 +1275,10 @@ fn handle_command(core: &mut Core, cmd: Cmd, shared: &Arc<Shared>, ring: &Arc<Ar
 
         Cmd::Stop => {
             drain(ring);
+            *shared
+                .pending_ended
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = None;
             core.playing = false;
             shared.paused.store(true, Ordering::Relaxed);
             core.current = None;
@@ -1514,6 +1591,7 @@ mod tests {
             output_channels: AtomicU32::new(2),
             drained: AtomicBool::new(true),
             pushed_total: AtomicU64::new(0),
+            pending_ended: Mutex::new(None),
             paused: AtomicBool::new(true),
             app: Mutex::new(None),
         })
@@ -1672,6 +1750,11 @@ mod tests {
             "expected ~19200 samples, got {}",
             produced.len()
         );
+        assert_eq!(
+            shared.pending_ended.lock().unwrap().as_deref(),
+            Some("solo"),
+            "non-gapless completion must wait until the audible ring drains"
+        );
     }
 
     #[test]
@@ -1776,5 +1859,28 @@ mod tests {
         .stream_url
         .as_deref()
         .is_some_and(|u| !u.starts_with("http")));
+    }
+
+    #[test]
+    fn http_timeouts_are_finite_and_map_to_timed_out() {
+        assert_eq!(HTTP_CONNECT_TIMEOUT, Duration::from_secs(8));
+        assert_eq!(HTTP_READ_TIMEOUT, Duration::from_secs(15));
+        assert_eq!(
+            http_io_error("timed out waiting for response").kind(),
+            std::io::ErrorKind::TimedOut
+        );
+        assert_eq!(
+            http_io_error("connection timeout").kind(),
+            std::io::ErrorKind::TimedOut
+        );
+        assert_eq!(
+            http_io_error("connection reset").kind(),
+            std::io::ErrorKind::Other
+        );
+        let timed_out = SymphoniaError::IoError(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "read timeout",
+        ));
+        assert!(is_unrecoverable_stream_error(&timed_out));
     }
 }

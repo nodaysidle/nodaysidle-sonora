@@ -1,9 +1,7 @@
 //! Spotify integration: OAuth 2.0 PKCE against a loopback redirect, token storage in the OS
 //! keyring, and the Web API for library browsing.
 //!
-//! Playback is delegated to the user's own Spotify client over Connect. Spotify audio is
-//! DRM-protected, so Sonora never downloads or decodes it — the Web API only drives transport on
-//! whichever device the user already has active.
+//! Playback uses Sonora's native Librespot player; the Web API handles library and playlist work.
 
 pub mod native_player;
 pub use native_player::NativeSpotifyPlayer;
@@ -21,6 +19,16 @@ use std::net::TcpListener;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const REDIRECT_PORT: u16 = 8899;
+/// Spotify's desktop (Keymaster) client id. Login5 audio metadata rejects tokens from a
+/// third-party dashboard app, which is what the Web API PKCE flow uses.
+const LIBRESPOT_CLIENT_ID: &str = "65b708073fc0480ea92a077233ca87bd";
+const LIBRESPOT_REDIRECT_URI: &str = "http://127.0.0.1:8898/login";
+const LIBRESPOT_SCOPES: &[&str] = &[
+    "streaming",
+    "user-read-playback-state",
+    "user-modify-playback-state",
+    "user-read-currently-playing",
+];
 
 pub fn redirect_uri_for(client_id: &str) -> String {
     if client_id == "d420a117a32841c2b3474932e49fb54b" {
@@ -31,7 +39,8 @@ pub fn redirect_uri_for(client_id: &str) -> String {
 }
 
 const SCOPES: &str = "streaming user-read-private user-read-email playlist-read-private playlist-read-collaborative \
-                      user-library-read user-top-read user-read-playback-state user-modify-playback-state";
+                      playlist-modify-private playlist-modify-public user-library-read user-top-read \
+                      user-read-playback-state user-modify-playback-state";
 const TOKEN_ENDPOINT: &str = "https://accounts.spotify.com/api/token";
 const API_BASE: &str = "https://api.spotify.com/v1";
 const KEYRING_SERVICE: &str = "com.nodaysidle.sonora";
@@ -134,15 +143,19 @@ fn store_tokens(tokens: &SpotifyTokens) -> Result<(), String> {
 }
 
 pub fn load_tokens() -> Result<Option<SpotifyTokens>, String> {
+    // File fallback first: keyring get_password blocks on a macOS prompt for a newly signed
+    // binary, which froze Spotify play until the user dismissed it.
+    if let Ok(Some(tokens)) = load_tokens_fallback() {
+        return Ok(Some(tokens));
+    }
     match keyring_entry() {
         Ok(entry) => match entry.get_password() {
-            Ok(json) => match serde_json::from_str::<SpotifyTokens>(&json) {
-                Ok(tokens) => Ok(Some(tokens)),
-                Err(_) => load_tokens_fallback(),
-            },
-            Err(_) => load_tokens_fallback(),
+            Ok(json) => serde_json::from_str(&json)
+                .map(Some)
+                .map_err(|e| format!("unreadable Spotify tokens: {e}")),
+            Err(_) => Ok(None),
         },
-        Err(_) => load_tokens_fallback(),
+        Err(_) => Ok(None),
     }
 }
 
@@ -150,11 +163,90 @@ pub fn clear_tokens() -> Result<(), String> {
     if let Ok(entry) = keyring_entry() {
         let _ = entry.delete_credential();
     }
-    clear_tokens_fallback()
+    clear_tokens_fallback()?;
+    let path = librespot_tokens_path();
+    if path.exists() {
+        let _ = std::fs::remove_file(&path);
+    }
+    Ok(())
 }
 
 pub fn has_credentials() -> bool {
     matches!(load_tokens(), Ok(Some(_)))
+}
+
+fn librespot_tokens_path() -> std::path::PathBuf {
+    fallback_tokens_path().with_file_name("librespot_tokens.json")
+}
+
+fn store_librespot_tokens(tokens: &SpotifyTokens) -> Result<(), String> {
+    let path = librespot_tokens_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let json = serde_json::to_string(tokens).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| format!("failed to write native Spotify tokens: {e}"))
+}
+
+fn load_librespot_tokens() -> Result<Option<SpotifyTokens>, String> {
+    let path = librespot_tokens_path();
+    if !path.exists() {
+        return Ok(None);
+    }
+    let data = std::fs::read_to_string(&path)
+        .map_err(|e| format!("failed to read native Spotify tokens: {e}"))?;
+    serde_json::from_str(&data)
+        .map(Some)
+        .map_err(|e| format!("unreadable native Spotify tokens: {e}"))
+}
+
+fn librespot_oauth_client() -> Result<librespot::oauth::OAuthClient, String> {
+    librespot::oauth::OAuthClientBuilder::new(
+        LIBRESPOT_CLIENT_ID,
+        LIBRESPOT_REDIRECT_URI,
+        LIBRESPOT_SCOPES.to_vec(),
+    )
+    .open_in_browser()
+    .with_custom_message("Return to Sonora — native Spotify playback is connected.")
+    .build()
+    .map_err(|e| e.to_string())
+}
+
+fn persist_librespot_oauth(token: librespot::oauth::OAuthToken) -> Result<SpotifyTokens, String> {
+    let expires_in = token
+        .expires_at
+        .saturating_duration_since(std::time::Instant::now())
+        .as_secs();
+    let tokens = SpotifyTokens {
+        access_token: token.access_token,
+        refresh_token: token.refresh_token,
+        expires_at: now_seconds() + expires_in,
+    };
+    store_librespot_tokens(&tokens)?;
+    Ok(tokens)
+}
+
+pub fn authenticate_librespot() -> Result<SpotifyTokens, String> {
+    let client = librespot_oauth_client()?;
+    let token = client.get_access_token().map_err(|e| e.to_string())?;
+    persist_librespot_oauth(token)
+}
+
+/// Access token minted by Spotify's Keymaster client — the one Librespot can exchange for audio keys.
+pub fn librespot_access_token() -> Result<String, String> {
+    if let Some(tokens) = load_librespot_tokens()? {
+        if !tokens.is_expired() {
+            return Ok(tokens.access_token);
+        }
+        if !tokens.refresh_token.is_empty() {
+            let client = librespot_oauth_client()?;
+            match client.refresh_token(&tokens.refresh_token) {
+                Ok(token) => return Ok(persist_librespot_oauth(token)?.access_token),
+                Err(e) => eprintln!("[sonora] native Spotify token refresh failed: {e}"),
+            }
+        }
+    }
+    Err("Reconnect Spotify in Settings to enable native playback.".into())
 }
 
 fn random_urlsafe(bytes: usize) -> String {
@@ -322,6 +414,7 @@ pub fn authenticate_with_emitter<F: Fn(&str) + Send + Sync + 'static>(
         expires_at: now_seconds() + response.expires_in,
     };
     store_tokens(&tokens)?;
+    authenticate_librespot()?;
     Ok(tokens)
 }
 
@@ -585,6 +678,29 @@ impl SpotifyProvider {
             }
         }
         Ok(tracks)
+    }
+
+    pub fn add_track_to_playlist(&self, playlist_id: &str, track_id: &str) -> Result<(), String> {
+        let playlist_id = playlist_id.trim_start_matches("spotify://playlist/");
+        let track_id = native_player::normalize_spotify_id(track_id)?;
+        let token = access_token(&self.client_id)?;
+        let response = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .map_err(|e| e.to_string())?
+            .post(format!("{API_BASE}/playlists/{playlist_id}/items"))
+            .bearer_auth(token)
+            .json(&serde_json::json!({ "uris": [format!("spotify:track:{track_id}")] }))
+            .send()
+            .map_err(|e| format!("Spotify playlist request failed: {e}"))?;
+        match response.status().as_u16() {
+            200..=299 => Ok(()),
+            403 => Err(
+                "Spotify refused the playlist change. Reconnect Spotify to grant playlist access."
+                    .to_string(),
+            ),
+            status => Err(format!("Spotify playlist request returned {status}")),
+        }
     }
 
     pub fn get_saved_tracks(&self, limit: u32) -> Result<Vec<ProviderTrack>, String> {

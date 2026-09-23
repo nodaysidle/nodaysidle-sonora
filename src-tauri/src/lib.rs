@@ -52,7 +52,7 @@ fn playback_load_track(
     track: EngineTrack,
     auto_play: bool,
 ) -> Result<(), String> {
-    let _ = state.spotify_player.pause();
+    let _ = state.spotify_player.stop();
     state.audio_engine.load_track(track, auto_play)
 }
 
@@ -66,7 +66,7 @@ fn playback_set_next_track(
 
 #[tauri::command]
 fn playback_play(state: State<AppState>) -> Result<(), String> {
-    let _ = state.spotify_player.pause();
+    let _ = state.spotify_player.stop();
     state.audio_engine.play()
 }
 
@@ -77,6 +77,7 @@ fn playback_pause(state: State<AppState>) -> Result<(), String> {
 
 #[tauri::command]
 fn playback_stop(state: State<AppState>) -> Result<(), String> {
+    let _ = state.spotify_player.stop();
     state.audio_engine.stop()
 }
 
@@ -363,28 +364,30 @@ fn library_set_spotify_client_id(state: State<AppState>, client_id: String) -> R
 // -------------------------------------------------------------------------------------------
 
 #[tauri::command]
-fn lyrics_get_for_track(
-    state: State<AppState>,
-    track: TrackRecord,
-) -> Result<ParsedLyrics, String> {
-    let embedded = track
-        .file_path
-        .as_deref()
-        .map(Path::new)
-        .filter(|p| p.is_file())
-        .and_then(embedded_lyrics);
+async fn lyrics_get_for_track(app: AppHandle, track: TrackRecord) -> Result<ParsedLyrics, String> {
+    let db = app.state::<AppState>().db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let embedded = track
+            .file_path
+            .as_deref()
+            .map(Path::new)
+            .filter(|p| p.is_file())
+            .and_then(embedded_lyrics);
 
-    lyrics::resolve_lyrics(
-        &state.db,
-        lyrics::LyricsRequest {
-            track_id: &track.id,
-            title: &track.title,
-            artist: &track.artist,
-            album: Some(&track.album),
-            duration_ms: track.duration_ms,
-            embedded,
-        },
-    )
+        lyrics::resolve_lyrics(
+            &db,
+            lyrics::LyricsRequest {
+                track_id: &track.id,
+                title: &track.title,
+                artist: &track.artist,
+                album: Some(&track.album),
+                duration_ms: track.duration_ms,
+                embedded,
+            },
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 // -------------------------------------------------------------------------------------------
@@ -467,6 +470,22 @@ async fn spotify_playlist_tracks(
 }
 
 #[tauri::command]
+async fn spotify_add_to_playlist(
+    app: AppHandle,
+    playlist_id: String,
+    track_id: String,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let provider = spotify_provider(&state)?;
+    drop(state);
+    tauri::async_runtime::spawn_blocking(move || {
+        provider.add_track_to_playlist(&playlist_id, &track_id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 async fn spotify_library(app: AppHandle, limit: Option<u32>) -> Result<Vec<ProviderTrack>, String> {
     let state = app.state::<AppState>();
     let provider = spotify_provider(&state)?;
@@ -539,6 +558,17 @@ async fn spotify_pause(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn spotify_stop(app: AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let player = state.spotify_player.clone();
+    drop(state);
+
+    tauri::async_runtime::spawn_blocking(move || player.stop())
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 async fn spotify_next(app: AppHandle) -> Result<(), String> {
     spotify_action(app, |provider| provider.next_remote()).await
 }
@@ -570,52 +600,6 @@ async fn spotify_set_volume(app: AppHandle, volume: f32) -> Result<(), String> {
         .map_err(|e| e.to_string())?
 }
 
-#[tauri::command]
-async fn spotify_resolve_stream(
-    title: String,
-    artist: String,
-    duration_ms: u64,
-) -> Result<String, String> {
-    let clean_title = title
-        .split('(')
-        .next()
-        .unwrap_or(&title)
-        .split('-')
-        .next()
-        .unwrap_or(&title)
-        .trim();
-    let query = format!("{artist} {clean_title}");
-    let yt = YouTubeMusicProvider::new();
-    let search_res = match yt.search(&query, 5).await {
-        Ok(res) if !res.tracks.is_empty() => res,
-        _ => yt
-            .search(&format!("{title} {artist}"), 5)
-            .await
-            .map_err(|e| format!("Stream search failed: {e}"))?,
-    };
-
-    let candidate = if duration_ms > 0 {
-        search_res
-            .tracks
-            .iter()
-            .min_by_key(|t| (t.duration_ms as i64 - duration_ms as i64).abs())
-            .or_else(|| search_res.tracks.first())
-    } else {
-        search_res.tracks.first()
-    };
-
-    let best = candidate.ok_or_else(|| format!("No audio stream found for '{title}' by '{artist}'"))?;
-    let video_id = best.id.trim_start_matches("ytmusic://track/").to_string();
-
-    tauri::async_runtime::spawn_blocking(move || {
-        YouTubeMusicProvider::new()
-            .resolve_stream(&video_id)
-            .map(|source| source.url)
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
 // -------------------------------------------------------------------------------------------
 // YouTube Music
 // -------------------------------------------------------------------------------------------
@@ -637,6 +621,20 @@ async fn ytmusic_resolve_stream(video_id: String) -> Result<String, String> {
     .await
     .map_err(|e| e.to_string())?
 }
+
+#[tauri::command]
+async fn spotify_resolve_stream(
+    title: String,
+    artist: String,
+    duration_ms: u64,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        YouTubeMusicProvider::new().resolve_stream_for_track(&title, &artist, duration_ms)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 
 // -------------------------------------------------------------------------------------------
 // Setup
@@ -707,6 +705,7 @@ pub fn run() {
             let client_id = AppConfig::load(&data_dir).spotify_client_id;
             let spotify_cache = data_dir.join("spotify_cache");
             let spotify_player = Arc::new(NativeSpotifyPlayer::new(Some(spotify_cache), client_id));
+            spotify_player.attach_app(handle.clone());
 
             app.manage(AppState {
                 audio_engine,
@@ -786,18 +785,20 @@ pub fn run() {
             spotify_search,
             spotify_playlists,
             spotify_playlist_tracks,
+            spotify_add_to_playlist,
             spotify_library,
             spotify_play,
             spotify_playback_state,
             spotify_resume,
             spotify_pause,
+            spotify_stop,
             spotify_next,
             spotify_previous,
             spotify_seek,
             spotify_set_volume,
-            spotify_resolve_stream,
             ytmusic_search,
             ytmusic_resolve_stream,
+            spotify_resolve_stream,
         ])
         .run(tauri::generate_context!())
         .expect("error while running sonora application");

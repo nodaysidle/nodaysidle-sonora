@@ -12,7 +12,18 @@ use super::{
 };
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+/// music.youtube.com answers non-desktop user agents (including the Android app's) with an
+/// "outdated browser" page that carries no InnerTube bootstrap values.
+const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
+                          (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
+
+/// The bootstrap page is ~0.5 MB; its values rotate on the order of days, not requests.
+const WEB_REMIX_CONFIG_TTL: Duration = Duration::from_secs(6 * 60 * 60);
+
+static WEB_REMIX_CONFIG: Mutex<Option<(String, String, Instant)>> = Mutex::new(None);
 
 fn endpoint(path: &str, api_key: &str) -> String {
     format!("https://music.youtube.com/youtubei/v1/{path}?key={api_key}&prettyPrint=false")
@@ -21,7 +32,7 @@ fn endpoint(path: &str, api_key: &str) -> String {
 fn client() -> reqwest::blocking::Client {
     reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(15))
-        .user_agent("com.google.android.apps.youtube.music/7.27.52 (Linux; U; Android 14)")
+        .user_agent(USER_AGENT)
         .build()
         .expect("HTTP client configuration is valid")
 }
@@ -169,6 +180,21 @@ fn bootstrap_value(page: &str, key: &str) -> Option<String> {
 }
 
 fn web_remix_config() -> Result<(String, String), String> {
+    if let Ok(cached) = WEB_REMIX_CONFIG.lock() {
+        if let Some((key, version, fetched)) = cached.as_ref() {
+            if fetched.elapsed() < WEB_REMIX_CONFIG_TTL {
+                return Ok((key.clone(), version.clone()));
+            }
+        }
+    }
+    let (api_key, version) = fetch_web_remix_config()?;
+    if let Ok(mut cached) = WEB_REMIX_CONFIG.lock() {
+        *cached = Some((api_key.clone(), version.clone(), Instant::now()));
+    }
+    Ok((api_key, version))
+}
+
+fn fetch_web_remix_config() -> Result<(String, String), String> {
     let page = client()
         .get("https://music.youtube.com/")
         .send()
@@ -333,6 +359,181 @@ fn resolve_with_ytdlp(video_id: &str) -> Result<TrackAudioSource, String> {
     })
 }
 
+/// Words that mark an upload as another rendition of the song. A candidate may only carry the ones
+/// the reference title carries too, so `Live Forever` still matches the studio `Live Forever`.
+const VARIANT_WORDS: &[&str] = &[
+    "live",
+    "cover",
+    "remix",
+    "acoustic",
+    "instrumental",
+    "karaoke",
+    "sped",
+    "slowed",
+    "nightcore",
+    "reaction",
+    "mashup",
+    "parody",
+    "tribute",
+    "8d",
+    "unplugged",
+    "extended",
+    "perform",
+    "performs",
+    "performance",
+    "concert",
+    "tour",
+    "session",
+    "rehearsal",
+    "528hz",
+    "432hz",
+    "medley",
+    "take",
+];
+
+/// Words that say nothing about which song a title names.
+const NOISE_WORDS: &[&str] = &[
+    "feat",
+    "ft",
+    "with",
+    "the",
+    "a",
+    "remastered",
+    "remaster",
+    "version",
+    "official",
+    "audio",
+    "video",
+    "lyrics",
+    "lyric",
+    "hd",
+    "hq",
+    "mv",
+    "music",
+    "and",
+];
+
+/// How far a candidate may run from the reference length before it counts as a different edit.
+/// Re-uploads pad a few seconds of silence or intro; a different edit is usually further off.
+const DURATION_TOLERANCE_MS: u64 = 10_000;
+
+/// Lowercases, drops punctuation, and pads both ends so a marker can be matched as a whole word:
+/// `"Blinding Lights (Live)"` becomes `" blinding lights live "`.
+fn padded_words(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push(' ');
+    for ch in text.chars() {
+        if ch.is_alphanumeric() {
+            out.extend(ch.to_lowercase());
+        } else {
+            out.push(' ');
+        }
+    }
+    out.push(' ');
+    out
+}
+
+fn words(text: &str) -> Vec<String> {
+    padded_words(text)
+        .split_whitespace()
+        .map(str::to_string)
+        .collect()
+}
+
+/// The reference title without catalogue suffixes (`Song - Remastered 2011`) or bracketed credits
+/// (`Song (feat. X)`), which uploads format inconsistently.
+fn core_title(title: &str) -> String {
+    let head = title.split(" - ").next().unwrap_or(title);
+    let mut depth = 0usize;
+    head.chars()
+        .filter(|&ch| match ch {
+            '(' | '[' => {
+                depth += 1;
+                false
+            }
+            ')' | ']' => {
+                depth = depth.saturating_sub(1);
+                false
+            }
+            _ => depth == 0,
+        })
+        .collect()
+}
+
+/// The catalogue track a stream is being found for.
+pub struct TrackReference<'a> {
+    pub title: &'a str,
+    pub artist: &'a str,
+    /// 0 when unknown, which disables the length check.
+    pub duration_ms: u64,
+}
+
+/// True when the candidate names the reference's song, credits one of its artists, and is the same
+/// rendition (no live, remix, cover… marker the reference lacks, and every marker it has).
+fn names_reference(candidate: &ProviderTrack, reference: &TrackReference) -> bool {
+    let meaningful = |w: &String| !NOISE_WORDS.contains(&w.as_str());
+    let mut title_words: Vec<String> = words(&core_title(reference.title))
+        .into_iter()
+        .filter(meaningful)
+        .collect();
+    if title_words.is_empty() {
+        title_words = words(reference.title);
+    }
+    let artist_words: Vec<String> = words(reference.artist)
+        .into_iter()
+        .filter(meaningful)
+        .collect();
+
+    let candidate_title = words(&candidate.title);
+    let mut candidate_words = candidate_title.clone();
+    candidate_words.extend(words(&candidate.artist));
+
+    let variants = |ws: &[String]| -> Vec<String> {
+        ws.iter()
+            .filter(|w| VARIANT_WORDS.contains(&w.as_str()))
+            .cloned()
+            .collect()
+    };
+    let reference_variants = variants(&words(reference.title));
+    let candidate_variants = variants(&candidate_title);
+
+    title_words.iter().all(|w| candidate_words.contains(w))
+        && artist_words.iter().any(|w| candidate_words.contains(w))
+        && candidate_variants
+            .iter()
+            .all(|w| reference_variants.contains(w))
+        && reference_variants
+            .iter()
+            .all(|w| candidate_variants.contains(w))
+}
+
+fn within_tolerance(candidate: &ProviderTrack, reference: &TrackReference) -> bool {
+    reference.duration_ms == 0
+        || candidate.duration_ms == 0
+        || candidate.duration_ms.abs_diff(reference.duration_ms) <= DURATION_TOLERANCE_MS
+}
+
+/// Picks a candidate from YouTube Music's song catalogue (`songs`) or, failing that, from general
+/// video search (`videos`), in search-relevance order.
+///
+/// Returns `None` rather than the closest-sounding upload when nothing names the reference: a
+/// wrong song, live take or cover played silently is worse than an explicit "no match".
+/// As a last resort a catalogue song of a different length is accepted, since that is the same
+/// release in another edit rather than a fan upload.
+fn select_candidate<'a>(
+    songs: &'a [ProviderTrack],
+    videos: &'a [ProviderTrack],
+    reference: &TrackReference,
+) -> Option<&'a ProviderTrack> {
+    let exact =
+        |t: &&ProviderTrack| names_reference(t, reference) && within_tolerance(t, reference);
+    songs
+        .iter()
+        .find(exact)
+        .or_else(|| videos.iter().find(exact))
+        .or_else(|| songs.iter().find(|t| names_reference(t, reference)))
+}
+
 impl YouTubeMusicProvider {
     pub fn new() -> Self {
         Self
@@ -354,6 +555,74 @@ impl YouTubeMusicProvider {
                 .to_string(),
         )
     }
+
+    /// Resolves an audio stream URL for a given artist and title (e.g. for Spotify track fallback).
+    ///
+    /// `target_duration_ms` is the length of the track being matched; pass 0 when it is unknown,
+    /// which disables the duration check.
+    pub fn resolve_stream_for_track(
+        &self,
+        title: &str,
+        artist: &str,
+        target_duration_ms: u64,
+    ) -> Result<String, String> {
+        let query = format!("{artist} {title}");
+        let reference = TrackReference {
+            title,
+            artist,
+            duration_ms: target_duration_ms,
+        };
+        let songs = search_with_inner_tube(&query, 5)
+            .map(|r| r.tracks)
+            .unwrap_or_default();
+
+        // yt-dlp search costs over a second, so it only runs when the catalogue has no exact match.
+        let exact_song = songs
+            .iter()
+            .find(|t| names_reference(t, &reference) && within_tolerance(t, &reference));
+        let videos = match exact_song {
+            Some(_) => Vec::new(),
+            None => search_with_ytdlp(&query, 5)
+                .map(|r| r.tracks)
+                .unwrap_or_default(),
+        };
+        if songs.is_empty() && videos.is_empty() {
+            return Err(format!("YouTube Music search failed for '{query}'"));
+        }
+
+        let track = select_candidate(&songs, &videos, &reference)
+            .ok_or_else(|| format!("No confident YouTube match for '{title}' by {artist}"))?;
+        let video_id = track.id.trim_start_matches("ytmusic://track/");
+        self.resolve_stream(video_id).map(|s| s.url)
+    }
+}
+
+fn search_with_inner_tube(query: &str, limit: usize) -> Result<SearchResults, String> {
+    // `EgWKAQIIAWoKEAkQBRAKEAMQBA%3D%3D` is the songs-only filter the web UI uses.
+    let inner_result = inner_tube_post(
+        "search",
+        json!({ "query": query, "params": "EgWKAQIIAWoKEAkQBRAKEAMQBA%3D%3D" }),
+    );
+
+    if let Ok(value) = &inner_result {
+        let mut tracks: Vec<ProviderTrack> = renderers(value, "musicResponsiveListItemRenderer")
+            .iter()
+            .filter_map(|r| parse_song(r))
+            .collect();
+        tracks.dedup_by(|a, b| a.id == b.id);
+        tracks.truncate(limit);
+
+        if !tracks.is_empty() {
+            let playlists = renderers(value, "musicTwoRowItemRenderer")
+                .iter()
+                .filter_map(|r| parse_playlist(r))
+                .take(limit)
+                .collect();
+            return Ok(SearchResults { tracks, playlists });
+        }
+    }
+
+    Err("InnerTube search returned no tracks".to_string())
 }
 
 fn resolve_with_inner_tube(video_id: &str) -> Result<TrackAudioSource, String> {
@@ -430,41 +699,7 @@ impl MusicProvider for YouTubeMusicProvider {
     async fn search(&self, query: &str, limit: usize) -> Result<SearchResults, String> {
         let query = query.to_string();
         tokio::task::spawn_blocking(move || {
-            // `EgWKAQIIAWoKEAkQBRAKEAMQBA%3D%3D` is the songs-only filter the web UI uses.
-            let inner_result = inner_tube_post(
-                "search",
-                json!({ "query": query, "params": "EgWKAQIIAWoKEAkQBRAKEAMQBA%3D%3D" }),
-            );
-
-            if let Ok(value) = &inner_result {
-                let mut tracks: Vec<ProviderTrack> =
-                    renderers(value, "musicResponsiveListItemRenderer")
-                        .iter()
-                        .filter_map(|r| parse_song(r))
-                        .collect();
-                tracks.dedup_by(|a, b| a.id == b.id);
-                tracks.truncate(limit);
-
-                if !tracks.is_empty() {
-                    let playlists = renderers(value, "musicTwoRowItemRenderer")
-                        .iter()
-                        .filter_map(|r| parse_playlist(r))
-                        .take(limit)
-                        .collect();
-                    return Ok(SearchResults { tracks, playlists });
-                }
-            }
-
-            // The web payload is undocumented and can temporarily omit its config or return an
-            // empty shape. yt-dlp is the existing optional fallback for the same public catalog.
-            search_with_ytdlp(&query, limit).map_err(|fallback_error| {
-                inner_result
-                    .err()
-                    .map(|inner_error| {
-                        format!("{inner_error}; yt-dlp fallback failed: {fallback_error}")
-                    })
-                    .unwrap_or(fallback_error)
-            })
+            search_with_inner_tube(&query, limit).or_else(|_| search_with_ytdlp(&query, limit))
         })
         .await
         .map_err(|e| e.to_string())?
@@ -600,5 +835,167 @@ mod tests {
         assert_eq!(track.artist, "Daft Punk");
         assert_eq!(track.duration_ms, 249_000);
         assert!(track.artwork_url.is_some());
+    }
+
+    fn candidate(title: &str, channel: &str, duration_ms: u64) -> ProviderTrack {
+        ProviderTrack {
+            id: format!("ytmusic://track/{title}"),
+            provider: ProviderKind::YouTubeMusic,
+            title: title.to_string(),
+            artist: channel.to_string(),
+            album: String::new(),
+            duration_ms,
+            artwork_url: None,
+        }
+    }
+
+    fn reference<'a>(title: &'a str, artist: &'a str, duration_ms: u64) -> TrackReference<'a> {
+        TrackReference {
+            title,
+            artist,
+            duration_ms,
+        }
+    }
+
+    #[test]
+    fn prefers_the_catalogue_song_over_video_uploads() {
+        let songs = vec![
+            candidate("Kyoto", "Yung Lean", 270_000),
+            candidate("Ginseng Strip 2002", "Yung Lean", 154_000),
+        ];
+        let videos = vec![candidate(
+            "Yung Lean ♦ Ginseng Strip 2002 ♦",
+            "Yung Lean",
+            159_000,
+        )];
+        let picked = select_candidate(
+            &songs,
+            &videos,
+            &reference("Ginseng Strip 2002", "Yung Lean", 153_000),
+        );
+        assert_eq!(picked.unwrap().title, "Ginseng Strip 2002");
+    }
+
+    #[test]
+    fn never_substitutes_an_instrumental_or_live_take_for_the_studio_track() {
+        let videos = vec![
+            candidate(
+                "Yung lean - Ginseng strip 2002 (instrumental)",
+                "Radio Silence",
+                151_000,
+            ),
+            candidate(
+                "Coma Cose - Mancarsi LIVE @ Filagosto Festival 2019",
+                "FilagostoTV",
+                154_000,
+            ),
+        ];
+        assert!(select_candidate(
+            &[],
+            &videos,
+            &reference("Ginseng Strip 2002", "Yung Lean", 153_000)
+        )
+        .is_none());
+        assert!(
+            select_candidate(&[], &videos, &reference("MANCARSI", "Coma_Cose", 229_000)).is_none()
+        );
+    }
+
+    #[test]
+    fn a_variant_word_in_the_reference_title_is_required_not_rejected() {
+        let videos = vec![
+            candidate("Live Forever (Acoustic)", "Fan Uploads", 274_000),
+            candidate("Oasis - Live Forever", "Oasis - Topic", 276_000),
+        ];
+        let picked = select_candidate(&[], &videos, &reference("Live Forever", "Oasis", 276_000));
+        assert_eq!(picked.unwrap().title, "Oasis - Live Forever");
+
+        let videos = vec![
+            candidate(
+                "Adele - Someone Like You (Official Music Video)",
+                "Adele",
+                285_000,
+            ),
+            candidate(
+                "Adele - Someone Like You (Live at The Royal Albert Hall)",
+                "Adele",
+                300_000,
+            ),
+        ];
+        let live = reference(
+            "Someone Like You - Live at the Royal Albert Hall",
+            "Adele",
+            297_000,
+        );
+        assert!(select_candidate(&[], &videos, &live)
+            .unwrap()
+            .title
+            .contains("Live"));
+    }
+
+    #[test]
+    fn rejects_a_different_song_of_the_right_length() {
+        let videos = vec![candidate(
+            "Riblja Čorba - Dva dinara, druže",
+            "Riblja Čorba",
+            203_000,
+        )];
+        let fabricated = reference("Zvezda nad Dunavom", "Riblja Čorba", 200_000);
+        assert!(select_candidate(&[], &videos, &fabricated).is_none());
+    }
+
+    #[test]
+    fn a_catalogue_song_of_another_edit_beats_no_match_but_a_video_does_not() {
+        let songs = vec![candidate("Applausi Per Fibra", "Fabri Fibra", 242_000)];
+        let videos = vec![candidate(
+            "Fabri Fibra - Applausi Per Fibra",
+            "Fabri Fibra",
+            250_000,
+        )];
+        let platinum = reference("Applausi Per Fibra", "Fabri Fibra", 294_000);
+        assert_eq!(
+            select_candidate(&songs, &videos, &platinum)
+                .unwrap()
+                .duration_ms,
+            242_000
+        );
+        assert!(select_candidate(&[], &videos, &platinum).is_none());
+    }
+
+    #[test]
+    fn matches_credits_and_suffixes_the_catalogue_formats_differently() {
+        let songs = vec![candidate(
+            "That's It [from GTAVI: The Album] (feat. Future & Metro Boomin)",
+            "Yung Lean & Grand Theft Auto VI",
+            162_000,
+        )];
+        let spotify = reference(
+            "That's It (feat. Future & Metro Boomin) [from GTAVI: The Album]",
+            "Yung Lean, Grand Theft Auto VI, Metro Boomin, Future",
+            161_000,
+        );
+        assert!(select_candidate(&songs, &[], &spotify).is_some());
+        assert_eq!(core_title("Money - Remastered 2011"), "Money");
+    }
+
+    #[test]
+    #[ignore]
+    fn live_resolve_stream_for_track() {
+        let provider = YouTubeMusicProvider::new();
+        for (title, artist, duration_ms) in [
+            ("Буйно голова", "Gio Pika", 128_000),
+            ("MANCARSI", "Coma_Cose", 229_000),
+            ("rockstar (feat. 21 Savage)", "Post Malone, 21 Savage", 218_000),
+        ] {
+            let started = std::time::Instant::now();
+            let stream_url = provider
+                .resolve_stream_for_track(title, artist, duration_ms)
+                .expect("stream resolved for track");
+            assert!(
+                stream_url.starts_with("http"),
+                "valid http url: {stream_url}"
+            );
+            println!("{title}: resolved in {:?}", started.elapsed());
+        }
     }
 }

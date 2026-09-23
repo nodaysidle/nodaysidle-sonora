@@ -155,7 +155,8 @@ export const SettingsView: React.FC = () => {
                 <span className="text-[10px] text-emerald-400/80 font-mono">Port 8899</span>
               </div>
               <p className="text-[11px] text-zinc-300">
-                If your browser didn't open automatically, click below to authorize in Spotify:
+                If your browser didn't open automatically, click below to authorize in Spotify.
+                Connect finishes with a second login so native playback can use Spotify's audio keys.
               </p>
               <div className="flex items-center space-x-2">
                 <button
@@ -258,8 +259,8 @@ export const SettingsView: React.FC = () => {
               </span>
             </p>
             <p className="text-[11px] text-zinc-500 leading-relaxed">
-              Spotify tracks are controlled through your active Spotify Connect device. Sonora does
-              not download or decode Spotify audio, and local gapless playback does not apply to it.
+              Spotify tracks play inside Sonora through its native Spotify player. Spotify-to-local
+              and local-to-Spotify queue changes advance after the audible track ends.
             </p>
           </div>
         </Section>
@@ -296,7 +297,7 @@ export const SettingsView: React.FC = () => {
 
           <p className="text-[11px] text-zinc-500 leading-relaxed">
             Local and YouTube Music tracks are gapless only when the next decoder is successfully
-            pre-buffered. Spotify transport stays on your Spotify Connect device.
+            pre-buffered. Spotify playback uses Sonora's native transport controls.
           </p>
         </Section>
 

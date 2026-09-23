@@ -6,7 +6,7 @@
 
 use std::future::Future;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use librespot::core::{
@@ -24,9 +24,13 @@ use librespot::playback::{
     mixer::{Mixer, MixerConfig},
     player::{Player, PlayerEvent},
 };
+use tauri::{AppHandle, Emitter};
 
 use super::SpotifyPlaybackState;
+use crate::audio::engine::EVENT_TRACK_ENDED;
 use crate::providers::{ProviderKind, ProviderTrack};
+
+pub const EVENT_SPOTIFY_PLAYBACK_STATE: &str = "spotify://playback-state";
 
 /// Normalizes various Spotify URI and URL representations down to a canonical 22-character
 /// base62 Spotify track ID.
@@ -85,47 +89,155 @@ struct NativePlayerInner {
     state: Mutex<SpotifyPlaybackState>,
     last_position_update: Mutex<Option<(Instant, u64)>>,
     active_session: Mutex<Option<ActiveSession>>,
+    current_play_request_id: Mutex<Option<u64>>,
+    load_wait: Mutex<Option<std::sync::mpsc::SyncSender<Result<(), String>>>>,
     cache_dir: Option<PathBuf>,
     client_id: Mutex<Option<String>>,
+    app: Mutex<Option<AppHandle>>,
+}
+
+fn canonical_spotify_track_id(uri: &SpotifyUri) -> Option<String> {
+    match uri {
+        SpotifyUri::Track { id } => id
+            .to_base62()
+            .ok()
+            .map(|id| format!("spotify://track/{id}")),
+        _ => None,
+    }
+}
+
+fn is_current_play_request(current: Option<u64>, event_request: u64) -> bool {
+    current == Some(event_request)
 }
 
 impl NativePlayerInner {
     fn handle_player_event(&self, event: PlayerEvent) {
         let mut state = self.state.lock().unwrap();
         let mut last_pos = self.last_position_update.lock().unwrap();
+        let mut request_id = self.current_play_request_id.lock().unwrap();
+        let mut ended_track_id = None;
+        let mut emit = true;
 
         match event {
-            PlayerEvent::Playing { position_ms, .. } => {
+            PlayerEvent::Loading { play_request_id, .. } => {
+                *request_id = Some(play_request_id);
+                emit = false;
+            }
+            PlayerEvent::Playing {
+                play_request_id,
+                position_ms,
+                ..
+            } => {
+                *request_id = Some(play_request_id);
                 state.is_playing = true;
                 state.progress_ms = position_ms as u64;
                 *last_pos = Some((Instant::now(), position_ms as u64));
+                if let Some(tx) = self.load_wait.lock().unwrap().take() {
+                    let _ = tx.send(Ok(()));
+                }
             }
-            PlayerEvent::Paused { position_ms, .. } => {
-                state.is_playing = false;
-                state.progress_ms = position_ms as u64;
-                *last_pos = None;
+            PlayerEvent::Paused {
+                play_request_id,
+                position_ms,
+                ..
+            } => {
+                if !is_current_play_request(*request_id, play_request_id) {
+                    emit = false;
+                } else {
+                    state.is_playing = false;
+                    state.progress_ms = position_ms as u64;
+                    *last_pos = None;
+                }
             }
-            PlayerEvent::Stopped { .. } | PlayerEvent::EndOfTrack { .. } => {
-                state.is_playing = false;
-                *last_pos = None;
+            PlayerEvent::Stopped { play_request_id, .. } => {
+                if !is_current_play_request(*request_id, play_request_id) {
+                    emit = false;
+                } else {
+                    state.is_playing = false;
+                    *last_pos = None;
+                }
             }
-            PlayerEvent::PositionCorrection { position_ms, .. }
-            | PlayerEvent::PositionChanged { position_ms, .. }
-            | PlayerEvent::Seeked { position_ms, .. } => {
-                state.progress_ms = position_ms as u64;
-                if state.is_playing {
-                    *last_pos = Some((Instant::now(), position_ms as u64));
+            PlayerEvent::EndOfTrack {
+                play_request_id,
+                track_id,
+                ..
+            } => {
+                if !is_current_play_request(*request_id, play_request_id) {
+                    emit = false;
+                } else {
+                    state.is_playing = false;
+                    state.progress_ms = state.duration_ms;
+                    ended_track_id = canonical_spotify_track_id(&track_id)
+                        .or_else(|| state.track.as_ref().map(|track| track.id.clone()));
+                    *last_pos = None;
+                }
+            }
+            PlayerEvent::PositionCorrection {
+                play_request_id,
+                position_ms,
+                ..
+            }
+            | PlayerEvent::PositionChanged {
+                play_request_id,
+                position_ms,
+                ..
+            }
+            | PlayerEvent::Seeked {
+                play_request_id,
+                position_ms,
+                ..
+            } => {
+                if !is_current_play_request(*request_id, play_request_id) {
+                    emit = false;
+                } else {
+                    state.progress_ms = position_ms as u64;
+                    if state.is_playing {
+                        *last_pos = Some((Instant::now(), position_ms as u64));
+                    }
                 }
             }
             PlayerEvent::VolumeChanged { volume } => {
                 let percent = (volume as f32 / 65535.0 * 100.0).round() as u8;
                 state.volume_percent = Some(percent);
             }
-            PlayerEvent::Unavailable { .. } => {
-                state.is_playing = false;
-                *last_pos = None;
+            PlayerEvent::Unavailable {
+                play_request_id,
+                track_id,
+                ..
+            } => {
+                if !is_current_play_request(*request_id, play_request_id) {
+                    emit = false;
+                } else {
+                    state.is_playing = false;
+                    ended_track_id = canonical_spotify_track_id(&track_id)
+                        .or_else(|| state.track.as_ref().map(|track| track.id.clone()));
+                    *last_pos = None;
+                    if let Some(tx) = self.load_wait.lock().unwrap().take() {
+                        let _ = tx.send(Err(
+                            "Spotify refused the audio key for this track. Native playback cannot decrypt it."
+                                .into(),
+                        ));
+                    }
+                }
             }
             _ => {}
+        }
+
+        let snapshot = state.clone();
+        drop(request_id);
+        drop(last_pos);
+        drop(state);
+        if !emit {
+            return;
+        }
+        if let Some(app) = self.app.lock().unwrap().clone() {
+            let _ = app.emit(EVENT_SPOTIFY_PLAYBACK_STATE, snapshot);
+            if let Some(track_id) = ended_track_id {
+                let _ = app.emit(
+                    EVENT_TRACK_ENDED,
+                    serde_json::json!({ "trackId": track_id, "gapless": false }),
+                );
+            }
         }
     }
 
@@ -174,10 +286,17 @@ impl NativeSpotifyPlayer {
                 state: Mutex::new(initial_state),
                 last_position_update: Mutex::new(None),
                 active_session: Mutex::new(None),
+                current_play_request_id: Mutex::new(None),
+                load_wait: Mutex::new(None),
                 cache_dir,
                 client_id: Mutex::new(client_id),
+                app: Mutex::new(None),
             }),
         }
+    }
+
+    pub fn attach_app(&self, app: AppHandle) {
+        *self.inner.app.lock().unwrap() = Some(app);
     }
 
     pub fn set_client_id(&self, client_id: String) {
@@ -200,35 +319,37 @@ impl NativeSpotifyPlayer {
     }
 
     fn obtain_access_token(&self) -> Result<String, String> {
-        let client_id = self.effective_client_id()?;
-        super::access_token(&client_id)
+        super::librespot_access_token()
     }
 
     fn ensure_active_session(&self) -> Result<ActiveSessionTuple, String> {
-        let mut lock = self.inner.active_session.lock().map_err(|e| e.to_string())?;
-        if let Some(active) = lock.as_ref() {
-            if !active.session.is_invalid() && !active.player.is_invalid() {
-                return Ok((active.session.clone(), active.player.clone(), active.mixer.clone()));
+        {
+            let lock = self.inner.active_session.lock().map_err(|e| e.to_string())?;
+            if let Some(active) = lock.as_ref() {
+                if !active.session.is_invalid() && !active.player.is_invalid() {
+                    return Ok((
+                        active.session.clone(),
+                        active.player.clone(),
+                        active.mixer.clone(),
+                    ));
+                }
             }
         }
 
+        // Librespot's play example uses SessionConfig::default() (Keymaster client id).
+        // Overriding it with the Web API dashboard id made AP login hang until the UI timed out.
         let token = self.obtain_access_token()?;
-        let credentials = Credentials::with_access_token(token);
-        let client_id = self.effective_client_id()?;
-        let session_config = SessionConfig {
-            client_id,
-            ..Default::default()
-        };
-
+        let token_credentials = Some(Credentials::with_access_token(token));
+        let cached_credentials = None::<Credentials>;
+        let session_config = SessionConfig::default();
         let cache = self.inner.cache_dir.as_ref().and_then(|dir| {
-            let creds_dir = dir.join("credentials");
             let vol_dir = dir.join("volume");
             let audio_dir = dir.join("audio");
-            Cache::new(Some(creds_dir), Some(vol_dir), Some(audio_dir), Some(500 * 1024 * 1024)).ok()
+            Cache::new(None::<PathBuf>, Some(vol_dir), Some(audio_dir), Some(500 * 1024 * 1024)).ok()
         });
 
         let player_config = PlayerConfig {
-            bitrate: Bitrate::Bitrate320,
+            bitrate: Bitrate::Bitrate160,
             normalisation: true,
             normalisation_type: NormalisationType::Album,
             normalisation_method: NormalisationMethod::Dynamic,
@@ -240,11 +361,28 @@ impl NativeSpotifyPlayer {
         let inner_weak = Arc::downgrade(&self.inner);
 
         let (session, player, mixer, event_task) = run_async_block(async move {
-            let session = Session::new(session_config, cache);
-            session
-                .connect(credentials, true)
+            let mut last_err = None;
+            let mut session = None;
+            for credentials in [token_credentials, cached_credentials].into_iter().flatten() {
+                let candidate = Session::new(session_config.clone(), cache.clone());
+                match tokio::time::timeout(
+                    Duration::from_secs(15),
+                    candidate.connect(credentials, true),
+                )
                 .await
-                .map_err(|e| format!("Failed to connect Spotify session: {e}"))?;
+                {
+                    Ok(Ok(())) => {
+                        session = Some(candidate);
+                        last_err = None;
+                        break;
+                    }
+                    Ok(Err(e)) => last_err = Some(format!("Failed to connect Spotify session: {e}")),
+                    Err(_) => last_err = Some("Spotify connection timed out after 15s".to_string()),
+                }
+            }
+            let session = session.ok_or_else(|| {
+                last_err.unwrap_or_else(|| "Failed to connect Spotify session".to_string())
+            })?;
 
             let mixer_fn = librespot::playback::mixer::find(None)
                 .ok_or_else(|| "Failed to find audio mixer".to_string())?;
@@ -285,7 +423,11 @@ impl NativeSpotifyPlayer {
             _event_task: event_task,
         };
 
-        *lock = Some(active);
+        *self
+            .inner
+            .active_session
+            .lock()
+            .map_err(|e| e.to_string())? = Some(active);
         Ok((session, player, mixer))
     }
 
@@ -298,11 +440,11 @@ impl NativeSpotifyPlayer {
         let track_uri = SpotifyUri::Track { id: spotify_id };
 
         let (session, player, _mixer) = self.ensure_active_session()?;
+        *self.inner.current_play_request_id.lock().unwrap() = None;
 
-        // Reset state and set initial track info
         {
             let mut state = self.inner.state.lock().unwrap();
-            state.is_playing = true;
+            state.is_playing = false;
             state.progress_ms = 0;
             state.track = Some(ProviderTrack {
                 id: format!("spotify://track/{id}"),
@@ -313,26 +455,33 @@ impl NativeSpotifyPlayer {
                 duration_ms: 0,
                 artwork_url: None,
             });
-            *self.inner.last_position_update.lock().unwrap() = Some((Instant::now(), 0));
+            *self.inner.last_position_update.lock().unwrap() = None;
         }
 
-        // Start playback
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        *self.inner.load_wait.lock().unwrap() = Some(tx);
         player.load(track_uri.clone(), true, 0);
 
-        // Fetch full metadata asynchronously in the background
         let session_meta = session.clone();
         let inner_weak = Arc::downgrade(&self.inner);
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(async move {
-                if let Ok(track_meta) = Track::get(&session_meta, &track_uri).await {
-                    if let Some(inner) = inner_weak.upgrade() {
-                        inner.update_track_metadata(track_meta);
-                    }
+        let meta_uri = track_uri;
+        librespot_runtime().spawn(async move {
+            if let Ok(track_meta) = Track::get(&session_meta, &meta_uri).await {
+                if let Some(inner) = inner_weak.upgrade() {
+                    inner.update_track_metadata(track_meta);
                 }
-            });
-        }
+            }
+        });
 
-        Ok(())
+        match rx.recv_timeout(Duration::from_secs(20)) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(err)) => Err(err),
+            Err(_) => {
+                let _ = player.stop();
+                *self.inner.load_wait.lock().unwrap() = None;
+                Err("Spotify took too long to start this track".to_string())
+            }
+        }
     }
 
     /// Pauses audio playback.
@@ -350,6 +499,23 @@ impl NativeSpotifyPlayer {
             }
         }
         state.is_playing = false;
+        *self.inner.last_position_update.lock().unwrap() = None;
+        Ok(())
+    }
+
+    /// Stops native playback and clears its track so the generic engine can take ownership.
+    pub fn stop(&self) -> Result<(), String> {
+        if let Ok(guard) = self.inner.active_session.lock() {
+            if let Some(active) = guard.as_ref() {
+                active.player.stop();
+            }
+        }
+        *self.inner.current_play_request_id.lock().unwrap() = None;
+        let mut state = self.inner.state.lock().unwrap();
+        state.track = None;
+        state.is_playing = false;
+        state.progress_ms = 0;
+        state.duration_ms = 0;
         *self.inner.last_position_update.lock().unwrap() = None;
         Ok(())
     }
@@ -430,26 +596,29 @@ impl NativeSpotifyPlayer {
     }
 }
 
-fn run_async_block<F, T>(future: F) -> T
+fn librespot_runtime() -> &'static tokio::runtime::Runtime {
+    static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .worker_threads(4)
+            .thread_name("sonora-spotify")
+            .build()
+            .expect("failed to start Spotify runtime")
+    })
+}
+
+fn run_async_block<F, T>(future: F) -> Result<T, String>
 where
-    F: Future<Output = T> + Send + 'static,
+    F: Future<Output = Result<T, String>> + Send + 'static,
     T: Send + 'static,
 {
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread {
-            return tokio::task::block_in_place(|| handle.block_on(future));
-        }
-    }
-
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to initialize tokio runtime");
-        rt.block_on(future)
-    })
-    .join()
-    .expect("Audio worker thread panicked")
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    librespot_runtime().spawn(async move {
+        let _ = tx.send(future.await);
+    });
+    rx.recv_timeout(Duration::from_secs(40))
+        .map_err(|_| "Spotify connection timed out".to_string())?
 }
 
 #[cfg(test)]
@@ -503,13 +672,83 @@ mod tests {
 
         assert!(player.set_volume(-0.5).is_ok());
         assert_eq!(player.playback_state().volume_percent, Some(0));
+
+        assert!(player.stop().is_ok());
+        let state = player.playback_state();
+        assert!(state.track.is_none());
+        assert!(!state.is_playing);
+        assert_eq!(state.progress_ms, 0);
+    }
+
+    #[test]
+    fn stale_play_requests_are_ignored() {
+        assert!(!is_current_play_request(None, 1));
+        assert!(!is_current_play_request(Some(2), 1));
+        assert!(is_current_play_request(Some(7), 7));
+    }
+
+    #[test]
+    fn canonical_track_id_matches_frontend_uris() {
+        let id = SpotifyId::from_base62("1jzIJcHCXneHw7ojC6LXiF").unwrap();
+        let uri = SpotifyUri::Track { id };
+        assert_eq!(
+            canonical_spotify_track_id(&uri).as_deref(),
+            Some("spotify://track/1jzIJcHCXneHw7ojC6LXiF")
+        );
     }
 
     #[test]
     fn native_player_without_credentials_reports_error() {
-        let player = NativeSpotifyPlayer::new(None, Some("test_client_id".to_string()));
+        let player = NativeSpotifyPlayer::new(None, None);
         let result = player.play_track("1jzIJcHCXneHw7ojC6LXiF");
-        // Should report error since not authenticated, rather than crashing or hanging
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn run_async_block_polls_the_dedicated_runtime() {
+        let value = run_async_block(async { Ok::<_, String>(7) }).unwrap();
+        assert_eq!(value, 7);
+    }
+
+    #[test]
+    #[ignore]
+    fn live_native_spotify_starts_playing() {
+        struct EprintLogger;
+        impl log::Log for EprintLogger {
+            fn enabled(&self, _: &log::Metadata) -> bool {
+                true
+            }
+            fn log(&self, record: &log::Record) {
+                eprintln!("[{}] {}", record.target(), record.args());
+            }
+            fn flush(&self) {}
+        }
+        static LOGGER: EprintLogger = EprintLogger;
+        let _ = log::set_logger(&LOGGER);
+        log::set_max_level(log::LevelFilter::Debug);
+        let home = std::env::var("HOME").expect("HOME");
+        let data = PathBuf::from(home).join("Library/Application Support/com.nodaysidle.sonora");
+        if crate::providers::spotify::librespot_access_token().is_err() {
+            eprintln!("Opening Keymaster OAuth for native playback…");
+            crate::providers::spotify::authenticate_librespot().expect("keymaster oauth");
+        }
+        let settings: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(data.join("settings.json")).expect("settings.json"),
+        )
+        .unwrap();
+        let client_id = settings
+            .get("spotifyClientId")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let player = NativeSpotifyPlayer::new(Some(data.join("spotify_cache")), client_id);
+        player
+            .play_track("7v3rmoy5jcn4h5UqwQyCM3")
+            .expect("native Spotify play");
+        assert!(
+            player.playback_state().is_playing,
+            "Librespot must report Playing before play_track returns"
+        );
+        std::thread::sleep(Duration::from_secs(2));
+        player.stop().unwrap();
     }
 }

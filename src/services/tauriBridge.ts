@@ -61,6 +61,7 @@ export const EVENTS = {
   scanProgress: 'sonora://scan-progress',
   libraryChanged: 'sonora://library-changed',
   mediaKey: 'sonora://media-key-event',
+  spotifyState: 'spotify://playback-state',
 } as const;
 
 export const tauriBridge = {
@@ -216,11 +217,20 @@ export const tauriBridge = {
     return call<ProviderTrack[]>('spotify_playlist_tracks', { playlistId }, []);
   },
 
+  spotifyAddToPlaylist(playlistId: string, trackId: string): Promise<void> {
+    return call('spotify_add_to_playlist', { playlistId, trackId }, undefined);
+  },
+
   spotifyLibrary(limit = 50): Promise<ProviderTrack[]> {
     return call<ProviderTrack[]>('spotify_library', { limit }, []);
   },
 
-  /** Spotify audio is DRM protected, so playback is delegated to the user's own Spotify client. */
+  /** Resolves an audio stream for a Spotify track using YouTube Music fallback. */
+  spotifyResolveStream(title: string, artist: string, durationMs: number): Promise<string> {
+    return call<string>('spotify_resolve_stream', { title, artist, durationMs }, '');
+  },
+
+  /** Starts the native Librespot player bundled with Sonora. */
   spotifyPlay(uri: string): Promise<void> {
     return call('spotify_play', { uri }, undefined);
   },
@@ -241,6 +251,10 @@ export const tauriBridge = {
     return call('spotify_pause', {}, undefined);
   },
 
+  spotifyStop(): Promise<void> {
+    return call('spotify_stop', {}, undefined);
+  },
+
   spotifyNext(): Promise<void> {
     return call('spotify_next', {}, undefined);
   },
@@ -255,11 +269,6 @@ export const tauriBridge = {
 
   spotifySetVolume(volume: number): Promise<void> {
     return call('spotify_set_volume', { volume }, undefined);
-  },
-
-  spotifyResolveStream(title: string, artist: string, durationMs: number): Promise<string> {
-    if (!isTauriEnvironment()) return Promise.reject(new Error('Not running in the Sonora app.'));
-    return invoke<string>('spotify_resolve_stream', { title, artist, durationMs });
   },
 
   // ---------------------------------------------------------------------------------------
@@ -309,8 +318,12 @@ export const tauriBridge = {
     return subscribe(EVENTS.status, handler);
   },
 
-  onTrackEnded(handler: (payload: { trackId: string }) => void): Promise<UnlistenFn> {
+  onTrackEnded(handler: (payload: { trackId: string; gapless: boolean }) => void): Promise<UnlistenFn> {
     return subscribe(EVENTS.trackEnded, handler);
+  },
+
+  onSpotifyPlaybackState(handler: (payload: SpotifyPlaybackState) => void): Promise<UnlistenFn> {
+    return subscribe(EVENTS.spotifyState, handler);
   },
 
   onScanProgress(handler: (payload: ScanProgress) => void): Promise<UnlistenFn> {
