@@ -10,8 +10,9 @@ use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter};
 
-use super::native_player::{normalize_spotify_id, EVENT_SPOTIFY_PLAYBACK_STATE};
-use super::{SpotifyPlaybackState, SpotifyProvider};
+use super::{
+    normalize_spotify_id, SpotifyPlaybackState, SpotifyProvider, EVENT_SPOTIFY_PLAYBACK_STATE,
+};
 use crate::audio::engine::EVENT_TRACK_ENDED;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(1000);

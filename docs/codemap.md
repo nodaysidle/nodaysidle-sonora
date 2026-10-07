@@ -16,7 +16,7 @@ sonora/
 │   ├── AGENTS.md           # Older agent rules (root AGENTS.md wins)
 │   ├── CLAUDE.md           # Quick development rules & commands
 │   ├── codemap.md          # This file
-│   └── superpowers/        # librespot plan and design spec
+│   └── superpowers/        # librespot plan and design spec (historical; the Librespot player was removed)
 ├── package.json            # Node.js dependencies & scripts
 ├── tsconfig.json           # TypeScript configuration
 ├── vite.config.ts          # Vite build configuration
@@ -39,7 +39,7 @@ sonora/
 │       │   └── mod.rs      # LRCLIB API & transliteration engines
 │       └── providers/      # Streaming service bridges
 │           ├── spotify.rs  # Spotify Web API & PKCE Auth
-│           ├── spotify/    # connect_player.rs (Spotify Connect playback); native_player.rs (Librespot, not wired)
+│           ├── spotify/    # connect_player.rs (Spotify Connect playback)
 │           └── ytmusic.rs  # YouTube Music InnerTube stream resolution (also the Spotify fallback)
 └── src/                    # React 19 Frontend
     ├── main.tsx            # React application entry point

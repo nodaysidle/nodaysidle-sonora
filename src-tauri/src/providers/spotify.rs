@@ -5,9 +5,7 @@
 //! and playlist work.
 
 pub mod connect_player;
-pub mod native_player;
 pub use connect_player::SpotifyConnectPlayer;
-pub use native_player::NativeSpotifyPlayer;
 
 use super::{
     MusicProvider, ProviderKind, ProviderPlaylist, ProviderTrack, SearchResults, TrackAudioSource,
@@ -22,16 +20,6 @@ use std::net::TcpListener;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const REDIRECT_PORT: u16 = 8899;
-/// Spotify's desktop (Keymaster) client id. Login5 audio metadata rejects tokens from a
-/// third-party dashboard app, which is what the Web API PKCE flow uses.
-const LIBRESPOT_CLIENT_ID: &str = "65b708073fc0480ea92a077233ca87bd";
-const LIBRESPOT_REDIRECT_URI: &str = "http://127.0.0.1:8898/login";
-const LIBRESPOT_SCOPES: &[&str] = &[
-    "streaming",
-    "user-read-playback-state",
-    "user-modify-playback-state",
-    "user-read-currently-playing",
-];
 
 pub fn redirect_uri_for(client_id: &str) -> String {
     if client_id == "d420a117a32841c2b3474932e49fb54b" {
@@ -182,78 +170,50 @@ pub fn has_credentials() -> bool {
     matches!(load_tokens(), Ok(Some(_)))
 }
 
+/// Tokens left behind by the removed Librespot player; `clear_tokens` still deletes the file.
 fn librespot_tokens_path() -> std::path::PathBuf {
     fallback_tokens_path().with_file_name("librespot_tokens.json")
 }
 
-fn store_librespot_tokens(tokens: &SpotifyTokens) -> Result<(), String> {
-    let path = librespot_tokens_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+/// Event emitted with the current Spotify playback snapshot.
+pub const EVENT_SPOTIFY_PLAYBACK_STATE: &str = "spotify://playback-state";
+
+/// Normalizes various Spotify URI and URL representations down to a canonical 22-character
+/// base62 Spotify track ID.
+pub fn normalize_spotify_id(uri: &str) -> Result<String, String> {
+    let raw = uri.trim();
+    if raw.is_empty() {
+        return Err("Empty Spotify URI or track ID".to_string());
     }
-    let json = serde_json::to_string(tokens).map_err(|e| e.to_string())?;
-    std::fs::write(&path, json).map_err(|e| format!("failed to write native Spotify tokens: {e}"))
-}
 
-fn load_librespot_tokens() -> Result<Option<SpotifyTokens>, String> {
-    let path = librespot_tokens_path();
-    if !path.exists() {
-        return Ok(None);
-    }
-    let data = std::fs::read_to_string(&path)
-        .map_err(|e| format!("failed to read native Spotify tokens: {e}"))?;
-    serde_json::from_str(&data)
-        .map(Some)
-        .map_err(|e| format!("unreadable native Spotify tokens: {e}"))
-}
-
-fn librespot_oauth_client() -> Result<librespot::oauth::OAuthClient, String> {
-    librespot::oauth::OAuthClientBuilder::new(
-        LIBRESPOT_CLIENT_ID,
-        LIBRESPOT_REDIRECT_URI,
-        LIBRESPOT_SCOPES.to_vec(),
-    )
-    .open_in_browser()
-    .with_custom_message("Return to Sonora — native Spotify playback is connected.")
-    .build()
-    .map_err(|e| e.to_string())
-}
-
-fn persist_librespot_oauth(token: librespot::oauth::OAuthToken) -> Result<SpotifyTokens, String> {
-    let expires_in = token
-        .expires_at
-        .saturating_duration_since(std::time::Instant::now())
-        .as_secs();
-    let tokens = SpotifyTokens {
-        access_token: token.access_token,
-        refresh_token: token.refresh_token,
-        expires_at: now_seconds() + expires_in,
+    let id = if let Some(stripped) = raw.strip_prefix("spotify://track/") {
+        stripped
+    } else if let Some(stripped) = raw.strip_prefix("spotify:track:") {
+        stripped
+    } else if let Some(idx) = raw.find("/track/") {
+        &raw[idx + "/track/".len()..]
+    } else {
+        raw
     };
-    store_librespot_tokens(&tokens)?;
-    Ok(tokens)
-}
 
-pub fn authenticate_librespot() -> Result<SpotifyTokens, String> {
-    let client = librespot_oauth_client()?;
-    let token = client.get_access_token().map_err(|e| e.to_string())?;
-    persist_librespot_oauth(token)
-}
+    let id = id
+        .split('?')
+        .next()
+        .unwrap_or(id)
+        .split('#')
+        .next()
+        .unwrap_or(id)
+        .trim();
 
-/// Access token minted by Spotify's Keymaster client — the one Librespot can exchange for audio keys.
-pub fn librespot_access_token() -> Result<String, String> {
-    if let Some(tokens) = load_librespot_tokens()? {
-        if !tokens.is_expired() {
-            return Ok(tokens.access_token);
-        }
-        if !tokens.refresh_token.is_empty() {
-            let client = librespot_oauth_client()?;
-            match client.refresh_token(&tokens.refresh_token) {
-                Ok(token) => return Ok(persist_librespot_oauth(token)?.access_token),
-                Err(e) => eprintln!("[sonora] native Spotify token refresh failed: {e}"),
-            }
-        }
+    if id.is_empty() {
+        return Err("Missing Spotify track ID".to_string());
     }
-    Err("Reconnect Spotify in Settings to enable native playback.".into())
+
+    if id.len() == 22 && id.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        Ok(id.to_string())
+    } else {
+        Err(format!("Invalid Spotify track ID '{id}': must be 22-character base62"))
+    }
 }
 
 fn random_urlsafe(bytes: usize) -> String {
@@ -730,7 +690,7 @@ impl SpotifyProvider {
 
     pub fn add_track_to_playlist(&self, playlist_id: &str, track_id: &str) -> Result<(), String> {
         let playlist_id = playlist_id.trim_start_matches("spotify://playlist/");
-        let track_id = native_player::normalize_spotify_id(track_id)?;
+        let track_id = normalize_spotify_id(track_id)?;
         let token = access_token(&self.client_id)?;
         let response = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(15))
@@ -1126,5 +1086,51 @@ mod tests {
             ..fresh
         };
         assert!(stale.is_expired());
+    }
+}
+
+#[cfg(test)]
+mod normalize_tests {
+    use super::normalize_spotify_id;
+
+    #[test]
+    fn parses_various_spotify_uris() {
+        let uri1 = "spotify://track/1jzIJcHCXneHw7ojC6LXiF";
+        let uri2 = "spotify:track:1jzIJcHCXneHw7ojC6LXiF";
+        let uri3 = "1jzIJcHCXneHw7ojC6LXiF";
+        assert_eq!(
+            normalize_spotify_id(uri1).unwrap(),
+            "1jzIJcHCXneHw7ojC6LXiF"
+        );
+        assert_eq!(
+            normalize_spotify_id(uri2).unwrap(),
+            "1jzIJcHCXneHw7ojC6LXiF"
+        );
+        assert_eq!(
+            normalize_spotify_id(uri3).unwrap(),
+            "1jzIJcHCXneHw7ojC6LXiF"
+        );
+    }
+
+    #[test]
+    fn parses_web_urls_and_strips_queries() {
+        let url1 = "https://open.spotify.com/track/1jzIJcHCXneHw7ojC6LXiF?si=abc123xyz";
+        let url2 = "http://spotify.com/track/1jzIJcHCXneHw7ojC6LXiF";
+        assert_eq!(
+            normalize_spotify_id(url1).unwrap(),
+            "1jzIJcHCXneHw7ojC6LXiF"
+        );
+        assert_eq!(
+            normalize_spotify_id(url2).unwrap(),
+            "1jzIJcHCXneHw7ojC6LXiF"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_spotify_uris() {
+        assert!(normalize_spotify_id("").is_err());
+        assert!(normalize_spotify_id("   ").is_err());
+        assert!(normalize_spotify_id("not-a-valid-track-id").is_err());
+        assert!(normalize_spotify_id("spotify:track:invalid!chars").is_err());
     }
 }
