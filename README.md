@@ -4,6 +4,8 @@
 
 <h1 align="center">NODAYSIDLE Sonora</h1>
 
+![Sonora: Spotify, YouTube Music and local files in one player](docs/sonora.gif)
+
 <p align="center">
   <strong>Universal native desktop music player uniting Spotify, YouTube Music, and Local files.</strong><br>
   Sample-accurate gapless audio, studio-grade EBU R128 loudness normalization, and synced lyrics with real-time romanization.
