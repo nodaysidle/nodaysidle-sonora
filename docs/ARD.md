@@ -51,7 +51,7 @@
 |  +--------------------+  +----------------------+  +-----------------+  |
 |  |  Lyrics & Romaji   |  |  Platform Native     |  |  Secure Keyring |  |
 |  |  - LRCLIB client   |  |  - MPRIS (Linux)     |  |  - Spotify Token|  |
-|  |  - Kana/Hangul/    |  |  - SMTC (Windows)    |  |  - Credential   |  |
+|  |  - Kana/Hangul/    |  |                      |  |  - Credential   |  |
 |  |    Pinyin engine   |  |  - NowPlaying (macOS)|  |    storage      |  |
 |  +--------------------+  +----------------------+  +-----------------+  |
 +-------------------------------------------------------------------------+

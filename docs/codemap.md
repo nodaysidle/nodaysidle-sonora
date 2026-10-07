@@ -1,19 +1,22 @@
 # Codemap — Sonora
 
 ## Overview
-Sonora is a native cross-platform desktop music player (macOS, Linux, Windows) that unifies Spotify, YouTube Music, and Local Audio files with gapless playback, audio normalization, synced lyrics, and non-Latin romanization.
+Sonora is a native cross-platform desktop music player (macOS, Linux) that unifies Spotify, YouTube Music, and Local Audio files with gapless playback, audio normalization, synced lyrics, and non-Latin romanization.
 
 ## Directory Structure
 ```
 sonora/
-├── PRD.md                  # Product Requirements Document
-├── ARD.md                  # Architecture Reference Document
-├── TRD.md                  # Technical Requirements & Contracts
-├── TASKS.md                # Phased Implementation Roadmap
-├── AGENT.md                # Hard constraints, files to create, agent prompts
-├── CLAUDE.md               # Quick development rules & commands
-├── codemap.md              # Codebase architectural map
+├── AGENTS.md               # Repository source of truth for agents
 ├── README.md               # User & contributor documentation
+├── docs/
+│   ├── PRD.md              # Product Requirements Document
+│   ├── ARD.md              # Architecture Reference Document
+│   ├── TRD.md              # Technical Requirements & Contracts
+│   ├── TASKS.md            # Phased roadmap (historical planning)
+│   ├── AGENTS.md           # Older agent rules (root AGENTS.md wins)
+│   ├── CLAUDE.md           # Quick development rules & commands
+│   ├── codemap.md          # This file
+│   └── superpowers/        # librespot plan and design spec
 ├── package.json            # Node.js dependencies & scripts
 ├── tsconfig.json           # TypeScript configuration
 ├── vite.config.ts          # Vite build configuration
@@ -36,7 +39,8 @@ sonora/
 │       │   └── mod.rs      # LRCLIB API & transliteration engines
 │       └── providers/      # Streaming service bridges
 │           ├── spotify.rs  # Spotify Web API & PKCE Auth
-│           └── ytmusic.rs  # YouTube Music InnerTube stream resolution
+│           ├── spotify/    # connect_player.rs (Spotify Connect playback); native_player.rs (Librespot, not wired)
+│           └── ytmusic.rs  # YouTube Music InnerTube stream resolution (also the Spotify fallback)
 └── src/                    # React 19 Frontend
     ├── main.tsx            # React application entry point
     ├── App.tsx             # Root application shell

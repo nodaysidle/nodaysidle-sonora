@@ -8,10 +8,10 @@
 
 **Tech Stack:** Tauri v2, Rust (librespot 0.8, cpal, rodio-backend, native-tls, tokio), React 19, TypeScript, Tailwind CSS.
 
-**Spec:** [`docs/superpowers/specs/2026-09-15-librespot-native-streaming-design.md`](file:///Volumes/omarchyuser/projekti/sonora/docs/superpowers/specs/2026-09-15-librespot-native-streaming-design.md)
+**Spec:** [`docs/superpowers/specs/2026-09-15-librespot-native-streaming-design.md`](../specs/2026-09-15-librespot-native-streaming-design.md)
 
 ## Global Constraints
-- Keep idle memory under 120MB and CPU under 2% during playback.
+- Keep idle memory under 90MB and CPU under 2% during playback.
 - No external browser windows or processes launched during playback.
 - Every task must compile cleanly with `npm run build` and `cargo check`.
 - Use macOS native keychain and app data directories.

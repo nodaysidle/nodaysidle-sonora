@@ -20,7 +20,7 @@ This design introduces native in-app Spotify audio streaming using **`librespot`
 ### Non-Functional Requirements
 1. **Audio Quality**: Stream at 320 kbps (Vorbis).
 2. **Low Latency**: Transport controls (play/pause/seek) must respond in < 150ms.
-3. **Memory & CPU Efficiency**: Keep memory footprint under 120MB and idle CPU under 2% during streaming.
+3. **Memory & CPU Efficiency**: Keep memory footprint under 90MB and idle CPU under 2% during streaming.
 4. **Zero Compiler Warnings/Errors**: Both `cargo check` and `npm run build` must pass cleanly.
 
 ---

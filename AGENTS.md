@@ -2,12 +2,12 @@
 
 Sonora is a native desktop music player for local files, YouTube Music, and Spotify.
 The app uses Tauri 2, Rust 2021, React 19, TypeScript, Vite, Tailwind CSS, Zustand, and SQLite.
-Local and YouTube audio use the Rust Symphonia/CPAL engine; Spotify plays natively through Librespot.
+Local and YouTube audio use the Rust Symphonia/CPAL engine; Spotify plays through Spotify Connect on the user's Spotify app, falling back to a matched YouTube Music stream in the Rust engine (`providers/spotify/connect_player.rs`, `src/stores/playerStore.ts`). The Librespot player in `providers/spotify/native_player.rs` is not wired into the app.
 This file is the repository source of truth. When older planning documents disagree, follow this file and the working source.
 
 # Start Here
 
-Work from `/Volumes/omarchyuser/projekti/sonora`.
+Work from the repository root.
 Read `AGENTS.md`, then `docs/codemap.md`; consult `docs/ARD.md` and `docs/TRD.md` for subsystem contracts.
 Treat `docs/TASKS.md` as historical planning, not reliable completion status.
 Inspect the current implementation and tests before changing behavior.
@@ -29,7 +29,7 @@ The library integration tests need FFmpeg; playback smoke tests need an audio ou
 `src/` contains the React UI, Zustand stores, domain types, and typed Tauri bridge.
 `src-tauri/src/lib.rs` owns Tauri setup, application state, command registration, and playback coordination.
 `src-tauri/src/audio/` owns local and YouTube decoding, buffering, output, and normalization.
-`src-tauri/src/providers/spotify/` owns Spotify API access and native Librespot playback.
+`src-tauri/src/providers/spotify/` owns Spotify API access and Spotify Connect playback (plus an unwired Librespot player).
 `src-tauri/src/library/` and `src-tauri/src/db/` own scanning, metadata extraction, SQLite, and FTS5.
 Keep TypeScript and Rust models, command names, event names, and provider URI formats synchronized.
 
@@ -39,7 +39,7 @@ Keep heavy audio decoding, metadata extraction, database work, and long-running 
 Never block the React UI thread; send progress and playback state through Tauri events.
 Use strict TypeScript, functional React components and hooks, ES modules, and typed bridge wrappers.
 Keep local, YouTube, and Spotify tracks first-class in queues, search, transport controls, and state.
-Coordinate the Symphonia/CPAL and Librespot players so only the selected source owns playback.
+Coordinate the Symphonia/CPAL engine and Spotify Connect playback so only the selected source owns playback.
 Preserve native gapless playback, smooth volume handling, synced lyrics, and the dark glass interface.
 Store credentials and session material only through the OS keychain or application data directory.
 Add or update tests for behavior changes; do not replace working paths with mocks or placeholders.

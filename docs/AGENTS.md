@@ -1,11 +1,11 @@
 # AGENT.md — Sonora
 
 ## Project
-**Sonora** — High-performance native desktop music player uniting Spotify, YouTube Music, and Local files in one polished client. Built with **Tauri v2 + Rust + React 19 + TypeScript + Tailwind CSS**. Features gapless playback, EBU R128 audio normalization, synced lyrics with non-Latin romanization, dynamic themes, and native OS integrations (macOS, Linux, Windows).
+**Sonora** — High-performance native desktop music player uniting Spotify, YouTube Music, and Local files in one polished client. Built with **Tauri v2 + Rust + React 19 + TypeScript + Tailwind CSS**. Features gapless playback, EBU R128 audio normalization, synced lyrics with non-Latin romanization, dynamic themes, and native OS integrations (macOS, Linux).
 
 ## BUILD & RUN INSTRUCTIONS
 ```bash
-# In project root (/Volumes/omarchyuser/projekti/sonora)
+# In the repository root
 npm install
 npm run tauri dev        # Run native desktop app in development
 npm run tauri build      # Compile production release binary / bundle
@@ -16,12 +16,12 @@ npm run tauri build      # Compile production release binary / bundle
 ## RULES — READ THESE FIRST
 
 ### ✅ Do
-1. **True Native Performance**: Keep idle memory under 100MB and CPU under 2% during playback. Offload heavy audio decoding, metadata extraction, and database searches to Rust.
+1. **True Native Performance**: Keep idle memory under 90MB and CPU under 2% during playback. Offload heavy audio decoding, metadata extraction, and database searches to Rust.
 2. **Deterministic Gapless Audio**: Use a double-buffering pre-roll mechanism in the Rust audio thread (`cpal` + `symphonia`) so that transitions between consecutive tracks have zero audible delay or click.
 3. **EBU R128 Loudness Normalization**: Normalize track loudness to -14.0 LUFS with smooth gain transitions. Never hard-clip or drastically compress dynamic range.
 4. **First-Class Lyrics & Romanization**: Provide word/line synchronized lyrics with instant script detection and romanization (Romaji, Hangul RR, Pinyin, Cyrillic Latin).
 5. **Unified Canvas**: Treat Local files, Spotify tracks, and YouTube Music streams as first-class citizens in playlists, queues, and search.
-6. **Glassmorphic Native Design**: Use Tailwind tokens, native window vibrancy (`window-vibrancy` / macOS Liquid Glass / Windows Mica), and dynamic album art tinting.
+6. **Glassmorphic Native Design**: Use Tailwind tokens, native window vibrancy (`window-vibrancy` / macOS Liquid Glass), and dynamic album art tinting.
 7. **Compile with Zero Errors**: Every step must compile cleanly via `npm run build` and `cargo check`.
 
 ### ❌ Don’t

@@ -53,7 +53,7 @@ Mainstream music streaming desktop apps have become bloated Chromium web views c
 
 | Problem in Mainstream Players | How Sonora Solves It |
 | :--- | :--- |
-| **Bloated Electron shell** (700MB–1.2GB RAM idle) | **Lightweight Tauri v2 + Rust** (<105 MB RAM idle, ~2% CPU) |
+| **Bloated Electron shell** (700MB–1.2GB RAM idle) | **Lightweight Tauri v2 + Rust** (target <90 MB RAM idle, ~2% CPU) |
 | **Jarring volume jumps** between old and modern tracks | **Hardware EBU R128 Loudness Normalization** (-14 LUFS real-time gain stage) |
 | **Gaps & clicks** between continuous album tracks | **Double-buffering pre-roll engine** (sample-accurate gapless transitions) |
 | **Siloed music libraries** (Local vs. Spotify vs. YouTube) | **Unified Canvas**: Local FLACs, Spotify playlists, and YT Music streams share one queue |
@@ -69,7 +69,7 @@ Tested and measured live on Apple Silicon macOS (M4, 16GB):
 | Metric | Official Spotify Desktop | **Sonora Desktop** |
 | :--- | :--- | :--- |
 | **Core Architecture** | Heavy Electron / Chromium (6–8 helper processes) | **Tauri v2 + Native Rust + macOS CoreAudio / ALSA** |
-| **RAM / Idle Memory** | **~650 MB – 1.2 GB** | **~102 MB** *(~7x–10x lighter)* |
+| **RAM / Idle Memory** | **~650 MB – 1.2 GB** | **~102 MB measured** *(~7x–10x lighter; target <90 MB)* |
 | **CPU Usage (Playback)** | **8.0% – 15.0%** (Chromium rendering + telemetry) | **~2.0%** *(practically idle)* |
 | **Process Count** | 6–8 subprocesses | **1 single unified process** |
 | **Telemetry & Bloat** | Ads, trackers, background analytics | **Zero telemetry, zero ads, pure local processing** |
@@ -84,7 +84,7 @@ Tested and measured live on Apple Silicon macOS (M4, 16GB):
 | **Native Audio Engine** | High-performance audio pipeline using `symphonia` + `cpal`. Decodes FLAC, MP3, AAC, OGG, and Vorbis with lock-free ring buffering. |
 | **Deterministic Gapless** | Double-buffering pre-roll mechanism pre-decodes 5 seconds of the upcoming track so transitions have zero audible delay, click, or sample discontinuity. |
 | **Loudness Normalization** | Real-time EBU R128 integrated loudness scanning with a smooth floating-point gain stage targeting -14.0 LUFS. |
-| **Spotube-Style Resolver** | Spotify PKCE OAuth 2.0 Web API integration for playlists and metadata; audio streams resolved via YouTube Music InnerTube and `yt-dlp` with zero DRM blocks. |
+| **Spotify Connect + YouTube fallback** | Spotify PKCE OAuth 2.0 Web API for playlists and metadata; Spotify tracks play on your Spotify app via Spotify Connect, and fall back to a matched YouTube Music stream (InnerTube / `yt-dlp`) when no Spotify device is available. |
 | **Synced Lyrics & Transliteration** | Real-time line-by-line scrolling lyrics from LRCLIB with instant script transliteration (Japanese Romaji via Lindera IPADIC, Korean RR, Pinyin, Cyrillic). |
 | **3-Way Lyrics View** | Switch between `Original`, `Romanized`, or `Dual (Original + Romanized side-by-side)`. |
 | **Local SQLite & FTS5** | Scans recursive music folders with `lofty`, extracts embedded artwork, and indexes tags into SQLite with FTS5 instant full-text search. |
@@ -102,8 +102,8 @@ Tested and measured live on Apple Silicon macOS (M4, 16GB):
 |  [ Local Audio Files ]       [ Spotify Library & Playlists ]    [ YouTube Music API ] |
 |   (FLAC, MP3, AAC, OGG)       (PKCE OAuth 2.0 Web API)          (InnerTube / yt-dlp)  |
 |            |                                |                              |          |
-|            |               Stream Resolver (Spotube-style)                 |          |
-|            |               Artist + Title + Duration Match                 |          |
+|            |       Spotify Connect (your Spotify app plays audio)          |          |
+|            |    fallback: YouTube match by Artist + Title + Duration       |          |
 |            |                                |                              |          |
 |            v                                v                              v          |
 |     +---------------------------------------------------------------------------+     |
@@ -128,11 +128,11 @@ Tested and measured live on Apple Silicon macOS (M4, 16GB):
 
 ## Spotify Resolver
 
-Spotify does not expose decrypted audio streams to third-party clients and restricts raw DRM keys. Sonora adopts the proven **Spotube architecture**:
+Spotify does not give third-party players the audio keys for many Premium accounts, so an official Spotify client has to render Spotify audio. Sonora plays Spotify tracks through **Spotify Connect, with a YouTube fallback**:
 1. Connects directly to your **personal Spotify Developer Client ID** via PKCE OAuth 2.0.
-2. Synchronizes your real Spotify playlists, saved albums, liked songs, and library metadata with zero rate limits.
-3. When you play a track, Sonora matches the song by `Artist + Title + Duration` against high-bitrate YouTube Music audio streams via InnerTube and `yt-dlp`.
-4. Decodes the stream directly in Rust with native hardware acceleration, bypassing Electron overhead and DRM restrictions.
+2. Synchronizes your Spotify playlists, saved albums, liked songs, and library metadata.
+3. When you play a Spotify track, Sonora starts it on your Spotify app (desktop, phone, or web player) through Spotify Connect and mirrors its playback state in Sonora's player bar.
+4. If no Spotify device is available, Sonora shows a notice and plays a YouTube Music stream matched by `Artist + Title + Duration` (InnerTube and `yt-dlp`) in its own Rust audio engine.
 
 ---
 
@@ -148,16 +148,16 @@ Sonora is local-first by design:
 ## Install
 
 ### macOS (Apple Silicon M-Series)
-1. Download the latest **[`Sonora_0.1.0_aarch64.dmg`](https://github.com/nodaysidle/nodaysidle-sonora/releases/download/v0.1.0/Sonora_0.1.0_aarch64.dmg)** from GitHub Releases.
+1. Download the latest **[`Sonora_0.1.1_aarch64.dmg`](https://github.com/nodaysidle/nodaysidle-sonora/releases/download/v0.1.1/Sonora_0.1.1_aarch64.dmg)** from GitHub Releases.
 2. Open the `.dmg` and drag `Sonora.app` into `/Applications`.
 3. If macOS displays an unnotarized developer notice on first open, right-click `Sonora.app` and choose **Open**, or run:
    ```bash
    xattr -cr /Applications/Sonora.app
    ```
 
-### Linux (AppImage & .deb)
-Linux builds (`.AppImage` and `.deb`) are produced automatically by the repository's GitHub Actions CI on every release tag.
-1. Download `Sonora_0.1.0_amd64.AppImage` or `sonora_0.1.0_amd64.deb` from [Releases](https://github.com/nodaysidle/nodaysidle-sonora/releases).
+### Linux (AppImage, .deb & .rpm)
+Linux builds (`.AppImage`, `.deb` and `.rpm`) are produced automatically by the repository's GitHub Actions CI on every release tag.
+1. Download `Sonora_0.1.1_amd64.AppImage`, `Sonora_0.1.1_amd64.deb` or `Sonora-0.1.1-1.x86_64.rpm` (Fedora / openSUSE) from [Releases](https://github.com/nodaysidle/nodaysidle-sonora/releases/tag/v0.1.1).
 2. For AppImage:
    ```bash
    chmod +x Sonora_*.AppImage

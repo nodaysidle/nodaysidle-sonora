@@ -100,7 +100,7 @@ export type ThemePreset =
 | `sonora://playback-status` | `PlaybackState` | On status transition | Updates play/pause buttons, track metadata bar. |
 | `sonora://track-ended` | `{ track_id: String }` | On track EOF | Triggers next queue track transition gaplessly. |
 | `sonora://scan-progress` | `{ scanned: u32, total: u32, current_file: String }` | Throttled (50ms) | Displays progress bar in Library settings. |
-| `sonora://media-key-event` | `{"action": "play_pause" \| "next" \| "prev"}` | On OS shortcut | Media key handling from macOS/Windows/Linux. |
+| `sonora://media-key-event` | `{"action": "play_pause" \| "next" \| "prev"}` | On OS shortcut | Media key handling from macOS/Linux. |
 
 ---
 

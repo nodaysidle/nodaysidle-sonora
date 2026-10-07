@@ -230,7 +230,7 @@ export const tauriBridge = {
     return call<string>('spotify_resolve_stream', { title, artist, durationMs }, '');
   },
 
-  /** Starts the native Librespot player bundled with Sonora. */
+  /** Plays a Spotify track on the user's Spotify app via Spotify Connect (Web API). */
   spotifyPlay(uri: string): Promise<void> {
     return call('spotify_play', { uri }, undefined);
   },

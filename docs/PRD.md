@@ -1,12 +1,12 @@
 # PRD — Sonora (Native Universal Music Client)
 
 ## 1. Executive Summary & Vision
-**Sonora** is a high-performance, native-feeling desktop music player for **macOS, Linux, and Windows**. It unifies music listening across three primary audio sources:
+**Sonora** is a high-performance, native-feeling desktop music player for **macOS and Linux**. It unifies music listening across three primary audio sources:
 1. **Local Audio Files** (FLAC, MP3, AAC, ALAC, OGG, OPUS, WAV)
 2. **Spotify** (Library playlists, saved tracks, albums, playback control)
 3. **YouTube Music** (Search, streaming, recommendations, artist catalogs)
 
-Unlike web wrappers (Electron/webviews running heavy web instances), Sonora leverages **Tauri v2 + Rust** to deliver a sub-100MB RAM footprint, instant responsiveness, native OS window vibrancy (macOS Glassmorphism/Liquid Glass, Windows Acrylic/Mica, Linux frosted blur), native media key integration, gapless audio playback with sample-accurate transitions, EBU R128 loudness normalization, synchronized lyrics with automatic romanization for non-Latin scripts (Japanese, Korean, Chinese, Cyrillic), and dynamic customizable themes.
+Unlike web wrappers (Electron/webviews running heavy web instances), Sonora leverages **Tauri v2 + Rust** to deliver a sub-90MB RAM footprint, instant responsiveness, native OS window vibrancy (macOS Glassmorphism/Liquid Glass, Linux frosted blur), native media key integration, gapless audio playback with sample-accurate transitions, EBU R128 loudness normalization, synchronized lyrics with automatic romanization for non-Latin scripts (Japanese, Korean, Chinese, Cyrillic), and dynamic customizable themes.
 
 ---
 
@@ -49,7 +49,7 @@ Unlike web wrappers (Electron/webviews running heavy web instances), Sonora leve
 - **Queue Management**: Play next, append to queue, shuffle (Fisher-Yates with history preservation), repeat track / repeat queue.
 - **Gapless Playback**: Dual audio stream buffering; track $N+1$ begins decoding 5 seconds before track $N$ finishes, scheduling seamless crossfade or sample-accurate boundary splicing.
 - **Loudness Normalization**: EBU R128 integrated loudness scanning or ReplayGain tag consumption. Targets configurable LUFS (default -14 LUFS, 1.0 dB true peak ceiling).
-- **Audio Output**: Device selection (ASIO/WASAPI on Windows, CoreAudio on macOS, ALSA/PulseAudio/PipeWire on Linux) via CPAL / Symphonia.
+- **Audio Output**: Device selection (CoreAudio on macOS, ALSA/PulseAudio/PipeWire on Linux) via CPAL / Symphonia.
 
 ### 4.3 Synced Lyrics & Non-Latin Romanization
 - **Synced Lyrics Display**: Full-screen immersive view and compact player sheet with active line glow, auto-scroll, and click-to-seek timestamp support.
@@ -68,7 +68,6 @@ Unlike web wrappers (Electron/webviews running heavy web instances), Sonora leve
   - Adaptive Dynamic Mode: Extracts vibrant and muted dominant colors from the current playing album cover to subtly illuminate the background and glow effects.
 - **Native OS Integrations**:
   - MPRIS v2 (Linux media controller integration).
-  - SMTC (System Media Transport Controls on Windows).
   - `MPNowPlayingInfoCenter` / macOS media keys & Control Center widget.
   - Global hotkeys (Play/Pause, Next, Prev, Mute, Volume Up/Down).
 
