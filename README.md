@@ -149,6 +149,16 @@ Sonora is local-first by design:
 
 ## Install
 
+SHA-256 checksums for the v0.1.1 release assets:
+
+| Asset | SHA-256 |
+| --- | --- |
+| [`Sonora_0.1.1_aarch64.dmg`](https://github.com/nodaysidle/nodaysidle-sonora/releases/download/v0.1.1/Sonora_0.1.1_aarch64.dmg) | `85bb22139854ac444524fee4c76769c755cf86f01f991de43dd1d0cdcd559727` |
+| [`Sonora_aarch64.app.tar.gz`](https://github.com/nodaysidle/nodaysidle-sonora/releases/download/v0.1.1/Sonora_aarch64.app.tar.gz) | `fe18857a35bd87a9951ed83fdd4c6eae031e7114a95067990f42263634947b9d` |
+| [`Sonora_0.1.1_amd64.AppImage`](https://github.com/nodaysidle/nodaysidle-sonora/releases/download/v0.1.1/Sonora_0.1.1_amd64.AppImage) | `16e9bdc29e9f6a6f9eef3a247f659ab7b41fc7eab85893b63324ca02be87346c` |
+| [`Sonora_0.1.1_amd64.deb`](https://github.com/nodaysidle/nodaysidle-sonora/releases/download/v0.1.1/Sonora_0.1.1_amd64.deb) | `2f8ca891093d216ec0737bc70b5898c0eef5b80d295807843088ad81fbae2ecb` |
+| [`Sonora-0.1.1-1.x86_64.rpm`](https://github.com/nodaysidle/nodaysidle-sonora/releases/download/v0.1.1/Sonora-0.1.1-1.x86_64.rpm) | `6defc8d52d00a181774ef4003d99acbf715e18d7a97d2d32555508f8c63c88b6` |
+
 ### macOS (Apple Silicon M-Series)
 1. Download the latest **[`Sonora_0.1.1_aarch64.dmg`](https://github.com/nodaysidle/nodaysidle-sonora/releases/download/v0.1.1/Sonora_0.1.1_aarch64.dmg)** from GitHub Releases.
 2. Open the `.dmg` and drag `Sonora.app` into `/Applications`.
@@ -159,7 +169,7 @@ Sonora is local-first by design:
 
 ### Linux (AppImage, .deb & .rpm)
 Linux builds (`.AppImage`, `.deb` and `.rpm`) are produced automatically by the repository's GitHub Actions CI on every release tag.
-1. Download `Sonora_0.1.1_amd64.AppImage`, `Sonora_0.1.1_amd64.deb` or `Sonora-0.1.1-1.x86_64.rpm` (Fedora / openSUSE) from [Releases](https://github.com/nodaysidle/nodaysidle-sonora/releases/tag/v0.1.1).
+1. Download [`Sonora_0.1.1_amd64.AppImage`](https://github.com/nodaysidle/nodaysidle-sonora/releases/download/v0.1.1/Sonora_0.1.1_amd64.AppImage), [`Sonora_0.1.1_amd64.deb`](https://github.com/nodaysidle/nodaysidle-sonora/releases/download/v0.1.1/Sonora_0.1.1_amd64.deb) or [`Sonora-0.1.1-1.x86_64.rpm`](https://github.com/nodaysidle/nodaysidle-sonora/releases/download/v0.1.1/Sonora-0.1.1-1.x86_64.rpm) (Fedora / openSUSE), or see [Releases](https://github.com/nodaysidle/nodaysidle-sonora/releases/tag/v0.1.1).
 2. For AppImage:
    ```bash
    chmod +x Sonora_*.AppImage
