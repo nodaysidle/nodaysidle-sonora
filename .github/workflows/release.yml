@@ -16,8 +16,8 @@ jobs:
         include:
           - platform: 'macos-latest' # Apple Silicon runner
             args: ''
-          - platform: 'ubuntu-22.04' # Linux runner
-            args: ''
+          - platform: 'ubuntu-22.04' # Linux runner (AppImage is built and fixed separately below)
+            args: '--bundles deb,rpm'
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -71,3 +71,27 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
+
+      # Tauri's AppImage ships AppRun.wrapped as 0770, which fails for any user other
+      # than the owner (AppImageHub's firejail test). Build it here, fix permissions,
+      # and upload it with a .sha256. An AppImage already on the release (uploaded and
+      # launch-tested by hand) is never replaced.
+      - name: Build AppImage
+        if: matrix.platform == 'ubuntu-22.04'
+        run: npx tauri build --bundles appimage
+
+      - name: Fix AppImage permissions and upload
+        if: matrix.platform == 'ubuntu-22.04'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd src-tauri/target/release/bundle/appimage
+          for f in *.AppImage; do
+            bash "$GITHUB_WORKSPACE/scripts/fix-appimage-perms.sh" "$f"
+            sha256sum "$f" > "$f.sha256"
+            if gh release view "${{ github.ref_name }}" --json assets -q '.assets[].name' | grep -qx "$f"; then
+              echo "$f already on the release; not replacing it"
+            else
+              gh release upload "${{ github.ref_name }}" "$f" "$f.sha256"
+            fi
+          done
